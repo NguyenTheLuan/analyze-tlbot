@@ -20,6 +20,7 @@ let APP = {
     ton: true
   },
   telegramSafeLimit: 3800,
+  telegramSectionDivider: "------------------------------\n",
   aiTimeout: 10000,
   aiMaxTokens: 280,
   maxTaxPct: 12,
@@ -806,6 +807,7 @@ if (top.length === 0) {
 }
 
 let out = ""
+let msgDiv = APP.telegramSectionDivider
 out += "💎 HIDDEN GEMS · " + scopeLabel + "\n"
 out +=
   (usedGeckoFallback ? "📌 Seed: GeckoTerminal (DexScreener boost trống).\n" : "📌 Seed: DexScreener boost/profile.\n") +
@@ -814,6 +816,7 @@ out +=
   ".\n" +
   timeframeHint +
   "\n"
+out += msgDiv
 
 for (let i = 0; i < top.length; i++) {
   let row = top[i]
@@ -825,7 +828,7 @@ for (let i = 0; i < top.length; i++) {
   let ca = base.address || ""
 
   let line = ""
-  line += "\n────────── #" + (i + 1) + " · " + pChain + " · " + row.symbol + " ──────────\n"
+  line += "\n" + msgDiv + "#" + (i + 1) + " · " + pChain + " · " + row.symbol + "\n"
   if (row.name) line += row.name + "\n"
   line += "\n"
   line += "  LP      " + fmtUsd(row.liq) + "\n"
@@ -871,12 +874,13 @@ let ai = await askDeepSeek(
   opts.profile
 )
 
-if (ai && (out + "\n──────────\n🧠 DeepSeek\n" + ai).length < APP.telegramSafeLimit) {
-  out += "\n──────────\n🧠 DeepSeek\n" + ai + "\n"
+if (ai && (out + "\n" + msgDiv + "🧠 DeepSeek\n" + ai).length < APP.telegramSafeLimit) {
+  out += "\n" + msgDiv + "🧠 DeepSeek\n" + ai + "\n"
 }
 
 out +=
-  "\n──────────\n" +
+  "\n" +
+  msgDiv +
   "⚠️ GoPlus/DexScreener chỉ snapshot; không bắt wash/MEV/rug sau đó. Không phải tư vấn đầu tư.\n"
 
 if (out.length > APP.telegramSafeLimit) {

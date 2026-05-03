@@ -16,6 +16,7 @@ let APP = {
   h1KlineLimit: 240,
   d1KlineLimit: 420,
   telegramChunkMax: 3900,
+  telegramSectionDivider: "------------------------------\n",
   frameWeights: { H1: 1, H2: 1, H4: 1.5, D1: 2, D3: 2, W1: 2.5 },
   /* Chỉ báo tối ưu cho XAU/USD: EMA 21/55 (MT4/FX phổ biến), RSI nới nhẹ vì vàng trend dai; nhiệt D1 vs H1 tách bạch */
   scoring: {
@@ -1703,7 +1704,10 @@ let spotMid = marketData.spot ? marketData.spot.mid : null
 let useSpotScale =
   spotMid != null && marketData.taKind === "COMEX_GC" && marketData.taLast > 0 && Math.abs(spotMid - marketData.taLast) > 2
 
+let msgDiv = APP.telegramSectionDivider
+
 let text = "🥇 XAU / VÀNG — PHÂN TÍCH KỸ THUẬT\n"
+text += msgDiv
 text += "📡 " + marketData.source + "\n"
 if (marketData.spot) {
   text +=
@@ -1766,13 +1770,15 @@ if (
   if (ix.length) text += "📐 " + ix.join(" · ") + "\n"
 }
 
-text += "\n📋 Phân tích\n"
+text += "\n" + msgDiv
+text += "📋 Phân tích\n"
 text += "→ " + advice + "\n"
 text += buildPeakDipCompact(data, marketData) + "\n"
 text += buildOutlookCompact(data) + "\n"
 if (data.dowStats) text += buildDowStatOneLiner(data.dowStats) + "\n"
 
-text += "\n📈 Xu hướng\n\n"
+text += "\n" + msgDiv
+text += "📈 Xu hướng\n\n"
 text += "Trong ngày:\n"
 text += buildScalpUltraCompact(data) + "\n"
 if (isIntradayTf(data.timeframe)) {
@@ -1782,7 +1788,8 @@ if (isIntradayTf(data.timeframe)) {
   text += "• H1: xem 🧩 Frames; Δ H1 " + marketData.changeH1.toFixed(3) + "%.\n"
 }
 
-text += "\nTrong tuần:\n"
+text += "\n" + msgDiv
+text += "Trong tuần:\n"
 text += buildWeeklyPlanUltraCompact(data, marketData.d1) + "\n"
 if (isIntradayTf(data.timeframe)) {
   text +=
@@ -1792,12 +1799,14 @@ if (isIntradayTf(data.timeframe)) {
   text += formatTradePlanCompact(plan, tradePlan, data, useSpotScale, spotMid, marketData.taLast) + "\n"
 }
 
+text += "\n" + msgDiv
 if (aiText) {
-  text += "\n🧠 Phân tích (AI):\n" + aiText + "\n\n"
+  text += "🧠 Phân tích (AI):\n" + aiText + "\n\n"
 } else {
-  text += "\n🧠 Phân tích (AI): chưa bật API key.\n\n"
+  text += "🧠 Phân tích (AI): chưa bật API key.\n\n"
 }
 
+text += msgDiv
 text +=
   "⚠️ XAU/USD là FX; spread và giờ phiên ảnh hưởng lớn. Chỉ tham khảo, không phải lời khuyên đầu tư."
 

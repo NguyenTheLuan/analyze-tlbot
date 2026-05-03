@@ -14,6 +14,7 @@ let APP = {
   rankingSize: 10,
   maxAnalysisPerTier: 1,
   telegramSafeLimit: 3800,
+  telegramSectionDivider: "------------------------------\n",
   h1KlineLimit: 240,
   d1KlineLimit: 420,
   httpTimeout: 8000,
@@ -773,6 +774,7 @@ if (analysisList.length === 0) {
 let tierText = "🤖 Nhận định theo tier:\n\n"
 
 function appendTierSection(title, list) {
+  tierText += APP.telegramSectionDivider
   if (list.length === 0) {
     tierText += title + "\n"
     tierText += "Không có candidate đủ sạch trong tier này.\n\n"
@@ -795,15 +797,17 @@ appendTierSection("Tier 2 - Alt thanh khoản tốt", tier2List)
 appendTierSection("Tier 3 - Nhỏ hơn, rủi ro cao hơn", tier3List)
 
 let aiText = await askDeepSeek(config, analysisList)
-let finalText = rankingText + "\n" + tierText
+let msgDiv = APP.telegramSectionDivider
+let finalText = rankingText + "\n" + msgDiv + tierText
 
-if (aiText && (finalText + "\n🧠 DeepSeek:\n" + aiText).length < APP.telegramSafeLimit) {
-  finalText += "\n🧠 DeepSeek:\n" + aiText + "\n"
+if (aiText && (finalText + msgDiv + "🧠 DeepSeek:\n" + aiText).length < APP.telegramSafeLimit) {
+  finalText += msgDiv + "🧠 DeepSeek:\n" + aiText + "\n"
 }
 
-let riskNote = "\n⚠️ Chỉ là setup theo dõi, không phải lời khuyên đầu tư. Chỉ vào lệnh khi có trigger và quản trị rủi ro."
-if ((finalText + riskNote).length < APP.telegramSafeLimit) {
-  finalText += riskNote
+let riskNote =
+  "⚠️ Chỉ là setup theo dõi, không phải lời khuyên đầu tư. Chỉ vào lệnh khi có trigger và quản trị rủi ro."
+if ((finalText + msgDiv + riskNote).length < APP.telegramSafeLimit) {
+  finalText += msgDiv + riskNote
 }
 
 if (finalText.length > APP.telegramSafeLimit) {

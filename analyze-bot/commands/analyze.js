@@ -14,6 +14,7 @@ let APP = {
   d1KlineLimit: 420,
   spotBaseUrl: "https://api.binance.com",
   futuresBaseUrl: "https://fapi.binance.com",
+  telegramSectionDivider: "------------------------------\n",
   frameWeights: { H1: 1, H2: 1, H4: 1.5, D1: 2, D3: 2, W1: 2.5 },
   scoring: {
     minFrameCandles: 35,
@@ -693,13 +694,17 @@ data.tradePlan = tradePlan
 let advice = localAdvice(data)
 let aiText = await askDeepSeek(config, data)
 
+let msgDiv = APP.telegramSectionDivider
 let text = "📊 " + data.symbol + " - PHÂN TÍCH KỸ THUẬT\n"
+text += msgDiv
 text += "🏦 Market: " + data.market + " | ⏱ Khung chính: " + data.timeframe + "\n"
 text += "💰 Giá: $" + fmtPrice(data.price) + " | 📈 24h: " + data.change.toFixed(2) + "% | 🔊 Vol: " + fmtMoney(data.volume * 1000000) + "\n"
 text += "🧭 Score: " + data.score + "/10 | Bias: " + data.bias + " | " + data.timeframe + ": " + data.selectedBias + "\n"
-text += "🧩 Frames: " + data.frames + "\n\n"
+text += "🧩 Frames: " + data.frames + "\n"
+text += msgDiv
 text += "⚡ Nhận định nhanh:\n"
-text += "→ " + advice + "\n\n"
+text += "→ " + advice + "\n"
+text += msgDiv
 text += "🎯 Kế hoạch:\n"
 text += "• Hành động: " + plan.action + "\n"
 text += "• Lý do: " + plan.reason + "\n"
@@ -712,14 +717,15 @@ text += "• TP3: " + (tradePlan.tp3 ? "$" + fmtPrice(tradePlan.tp3) : "N/A") + 
 text += "• R:R tới TP2: " + (tradePlan.rr ? "1:" + tradePlan.rr.toFixed(2) : "N/A") + "\n"
 text += "• Trigger: " + plan.trigger + "\n"
 text += "• Invalidation: " + plan.invalidation + "\n"
-text += "• Ghi chú: " + tradePlan.note + "\n\n"
+text += "• Ghi chú: " + tradePlan.note + "\n"
+text += msgDiv
 
 if (aiText) {
-  text += "🧠 DeepSeek:\n" + aiText + "\n\n"
+  text += "🧠 DeepSeek:\n" + aiText + "\n"
 } else {
-  text += "🧠 DeepSeek: bỏ qua hoặc chưa cấu hình API key.\n\n"
+  text += "🧠 DeepSeek: bỏ qua hoặc chưa cấu hình API key.\n"
 }
-
+text += msgDiv
 text += "⚠️ Lưu ý: Chỉ tham khảo, không phải lời khuyên đầu tư. Luôn quản trị rủi ro."
 
 try {
