@@ -4,20 +4,22 @@ let CONFIG_KEY = "BOT_CONFIG"
 // ===== CONFIG =====
 // Giữ toàn bộ tham số ở đây để dễ chỉnh mà không phải lần theo cả file.
 let APP = {
+  marketName: "Binance Futures USDT-M",
+  futuresBaseUrl: "https://fapi.binance.com",
   defaultTimeframe: "D1",
   defaultLimit: 50,
   minLimit: 10,
   maxLimit: 100,
   batchSize: 5,
-  rankingSize: 15,
-  maxAnalysisPerTier: 2,
-  telegramSafeLimit: 3600,
+  rankingSize: 10,
+  maxAnalysisPerTier: 1,
+  telegramSafeLimit: 3800,
   h1KlineLimit: 240,
   d1KlineLimit: 420,
   httpTimeout: 8000,
   klineTimeout: 7000,
   aiTimeout: 10000,
-  aiMaxTokens: 500,
+  aiMaxTokens: 220,
   validFrames: { H1: true, H2: true, H4: true, D1: true, D3: true, W1: true },
   frameWeights: { H1: 1, H2: 1, H4: 1.5, D1: 2, D3: 2, W1: 2.5 },
   blockedPairs: ["USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "BUSDUSDT", "DAIUSDT", "EURUSDT", "TRYUSDT"],
@@ -564,49 +566,10 @@ function uniqueCandidates(list) {
   return out
 }
 
-function pushPart(parts, title, body) {
-  if (!body) return
-
-  let text = title ? title + "\n" + body : body
-  if (text.length <= APP.telegramSafeLimit) {
-    parts.push(text)
-    return
-  }
-
-  let lines = text.split("\n")
-  let chunk = ""
-
-  for (let i = 0; i < lines.length; i++) {
-    let next = chunk ? chunk + "\n" + lines[i] : lines[i]
-    if (next.length > APP.telegramSafeLimit) {
-      if (chunk) parts.push(chunk)
-      chunk = lines[i]
-    } else {
-      chunk = next
-    }
-  }
-
-  if (chunk) parts.push(chunk)
-}
-
-async function sendParts(progressMessage, parts) {
-  if (parts.length === 0) return
-
-  try {
-    await progressMessage.editText(parts[0])
-  } catch (e) {
-    Bot.sendMessage(parts[0])
-  }
-
-  for (let i = 1; i < parts.length; i++) {
-    Bot.sendMessage(parts[i])
-  }
-}
-
 // ===== MARKET DATA =====
 async function getKlines(symbol, interval, limit) {
   let res = await HTTP.get({
-    url: "https://api.binance.com/api/v3/klines?symbol=" + symbol + "&interval=" + interval + "&limit=" + limit,
+    url: APP.futuresBaseUrl + "/fapi/v1/klines?symbol=" + symbol + "&interval=" + interval + "&limit=" + limit,
     timeout: APP.klineTimeout
   })
 
@@ -698,7 +661,7 @@ async function askDeepSeek(config, candidates) {
 
   let prompt =
     "Bạn là trader fulltime hơn 10 năm kinh nghiệm. Dưới đây là các coin đã được lọc bằng TA thật từ H1,H2,H4,D1,D3,W1.\n" +
-    "Với từng coin, trả lời đúng 1 dòng theo mẫu: '▪️ SYMBOL (Tier X): → xu hướng, RSI, động lượng/volume, khuyến nghị ngắn'.\n" +
+    "Tóm tắt toàn bộ trong tối đa 3 dòng. Mỗi dòng cực ngắn, ưu tiên coin đáng chú ý nhất từng tier.\n" +
     "Nếu coin tăng quá nóng, ưu tiên nói thận trọng chốt lời/quan sát/chờ điều chỉnh. Không hứa lợi nhuận, không nói chắc chắn, không bịa dữ liệu.\n\n" +
     compact
 
@@ -746,10 +709,10 @@ let commandOptions = parseCommandParams(params)
 let selectedTimeframe = commandOptions.timeframe
 let limit = commandOptions.limit
 
-let progress = await Bot.sendMessage("Đang quét top " + limit + " Binance USDT pairs, khung chính " + selectedTimeframe + "...")
+let progress = await Bot.sendMessage("Đang quét top " + limit + " " + APP.marketName + " pairs, khung chính " + selectedTimeframe + "...")
 
 let tickersRes = await HTTP.get({
-  url: "https://api.binance.com/api/v3/ticker/24hr",
+  url: APP.futuresBaseUrl + "/fapi/v1/ticker/24hr",
   timeout: APP.httpTimeout
 })
 
@@ -788,25 +751,24 @@ let tier3List = pickTierCandidates(results, 3, APP.maxAnalysisPerTier)
 let analysisList = uniqueCandidates(tier1List.concat(tier2List).concat(tier3List))
 if (analysisList.length === 0) analysisList = results.slice(0, 5).map(x => ensurePlan(x))
 
-let messageParts = []
 let rankingText = "🔎 XẾP HẠNG TOP " + limit + " COIN THEO BULLISH SCORE (tối đa 10)\n"
+rankingText += "Market: " + APP.marketName + "\n"
 rankingText += "Khung chính: " + selectedTimeframe + " | Xác nhận: H1/H2/H4/D1/D3/W1\n\n"
 rankingText += "| Hạng | Coin | Giá | 24h% | Volume (M) | Score/10 |\n"
 rankingText += "|------|------|-----|------|------------|----------|\n"
 
-for (let i = 0; i < ranking.length; i++) {
-  let r = ranking[i]
+let compactRanking = ranking.slice(0, 8)
+for (let i = 0; i < compactRanking.length; i++) {
+  let r = compactRanking[i]
   rankingText += "| " + (i + 1) + " | " + r.symbol + " | $" + fmtPrice(r.price) + " | " + r.change.toFixed(2) + "% | $" + r.volume.toFixed(1) + "M | " + r.finalScore + "/10 |\n"
 }
 
-rankingText += "\n💡 Tier: Tier 1 = BTC/ETH/BNB an toàn hơn nhưng ROI thấp hơn; Tier 2 = alt thanh khoản tốt; Tier 3 = coin nhỏ hơn, rủi ro cao hơn nhưng có thể ROI tốt hơn.\n"
-rankingText += "Nhận xét: Coin có điểm ≥7 và khung " + selectedTimeframe + " không bearish là nhóm đáng chú ý nhất.\n"
+rankingText += "\n💡 Tier 1: BTC/ETH/BNB | Tier 2: alt thanh khoản tốt | Tier 3: nhỏ hơn/rủi ro cao hơn.\n"
+rankingText += "Điểm ≥7 và khung " + selectedTimeframe + " không bearish là nhóm đáng chú ý.\n"
 
 if (analysisList.length === 0) {
   rankingText += "\n⚠️ Không có setup thật sự sạch. Các coin bên dưới chỉ nên xem như watchlist, chưa nên vào lệnh nếu chưa có trigger.\n"
 }
-
-pushPart(messageParts, "", rankingText)
 
 let tierText = "🤖 Nhận định theo tier:\n\n"
 
@@ -823,10 +785,8 @@ function appendTierSection(title, list) {
     let r = ensurePlan(list[i])
 
     tierText += "▪️ " + r.symbol + " (" + r.tierLabel + ", điểm " + r.finalScore + "/10, " + selectedTimeframe + ": " + r.selectedBias + "):\n"
-    tierText += "   Tier: " + r.tierNote + "\n"
     tierText += "   → " + localAdvice(r) + "\n"
-    tierText += "   Trigger: " + r.trigger + "\n"
-    tierText += "   Invalidation: " + r.invalidation + "\n\n"
+    tierText += "   Trigger: " + r.trigger + "\n\n"
   }
 }
 
@@ -834,15 +794,24 @@ appendTierSection("Tier 1 - Market leaders", tier1List)
 appendTierSection("Tier 2 - Alt thanh khoản tốt", tier2List)
 appendTierSection("Tier 3 - Nhỏ hơn, rủi ro cao hơn", tier3List)
 
-pushPart(messageParts, "", tierText)
-
 let aiText = await askDeepSeek(config, analysisList)
-if (aiText) {
-  pushPart(messageParts, "", "🧠 DeepSeek góc nhìn thêm:\n" + aiText)
-} else {
-  pushPart(messageParts, "", "AI: bỏ qua hoặc chưa cấu hình DeepSeek API key.")
+let finalText = rankingText + "\n" + tierText
+
+if (aiText && (finalText + "\n🧠 DeepSeek:\n" + aiText).length < APP.telegramSafeLimit) {
+  finalText += "\n🧠 DeepSeek:\n" + aiText + "\n"
 }
 
-pushPart(messageParts, "", "Lưu ý: Chỉ là danh sách setup đang theo dõi, không phải lời khuyên đầu tư. Vào lệnh chỉ khi có trigger và quản trị rủi ro.")
+let riskNote = "\n⚠️ Chỉ là setup theo dõi, không phải lời khuyên đầu tư. Chỉ vào lệnh khi có trigger và quản trị rủi ro."
+if ((finalText + riskNote).length < APP.telegramSafeLimit) {
+  finalText += riskNote
+}
 
-await sendParts(progress, messageParts)
+if (finalText.length > APP.telegramSafeLimit) {
+  finalText = finalText.slice(0, APP.telegramSafeLimit - 120) + "\n\n⚠️ Nội dung đã được rút gọn để gửi trong 1 tin nhắn."
+}
+
+try {
+  await progress.editText(finalText)
+} catch (e) {
+  Bot.sendMessage(finalText)
+}

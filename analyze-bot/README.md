@@ -11,7 +11,7 @@ Create these commands in TeleBotHost and paste the matching file content:
 
 ## Current MVP
 
-`/bestcoin` is a standalone TeleBotHost command. It scans Binance top USDT pairs by 24h quote volume, fetches real candles, builds `H1/H2/H4/D1/D3/W1`, scores EMA/RSI/MACD/candle/volume conditions, then optionally asks DeepSeek to summarize top candidates if `BOT_CONFIG.deepseek_api_key` exists in `Global`.
+`/bestcoin` is a standalone TeleBotHost command. It scans Binance USDT-M Futures top USDT pairs by 24h quote volume, fetches real candles, builds `H1/H2/H4/D1/D3/W1`, scores EMA/RSI/MACD/candle/volume conditions, then optionally asks DeepSeek to summarize top candidates if `BOT_CONFIG.deepseek_api_key` exists in `Global`.
 
 ## Usage
 
