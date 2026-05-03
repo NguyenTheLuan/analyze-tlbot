@@ -8,6 +8,7 @@ Create these commands in TeleBotHost and paste the matching file content:
 
 - `/bestcoin` -> `commands/bestcoin.js`
 - `/analyze` -> `commands/analyze.js`
+- `/hidden-gems` -> `commands/hidden-gems.js` (meme DEX: DexScreener boosts, fallback GeckoTerminal trending nếu chain ít boost — ví dụ Base; pool ≥ ~3 tháng + GoPlus khi có)
 
 ## Current MVP
 
@@ -23,7 +24,17 @@ Create these commands in TeleBotHost and paste the matching file content:
 /analyze btc
 /analyze pepe h4 futures
 /analyze eth d1 spot
+/hidden-gems
+/hidden-gems eth
+/hidden-gems bsc
+/hidden-gems sol
+/hidden-gems base
+/hidden-gems ton
+/hidden-gems base aggressive
 ```
+
+- Mặc định **survivor** (pool già ~3 tháng): bot gợi ý xử lý **D1 / swing**, không khuyên scalping M5.
+- Thêm `aggressive` (pool ~3h+, LP/vol nhẹ hơn survivor): gợi ý **H1–H4** / dòng tiền ngắn hơn.
 
 ## Notes
 
