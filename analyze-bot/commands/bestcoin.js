@@ -11,6 +11,7 @@ let APP = {
   batchSize: 5,
   rankingSize: 15,
   maxAnalysisPerTier: 2,
+  telegramSafeLimit: 3600,
   h1KlineLimit: 240,
   d1KlineLimit: 420,
   httpTimeout: 8000,
@@ -563,6 +564,45 @@ function uniqueCandidates(list) {
   return out
 }
 
+function pushPart(parts, title, body) {
+  if (!body) return
+
+  let text = title ? title + "\n" + body : body
+  if (text.length <= APP.telegramSafeLimit) {
+    parts.push(text)
+    return
+  }
+
+  let lines = text.split("\n")
+  let chunk = ""
+
+  for (let i = 0; i < lines.length; i++) {
+    let next = chunk ? chunk + "\n" + lines[i] : lines[i]
+    if (next.length > APP.telegramSafeLimit) {
+      if (chunk) parts.push(chunk)
+      chunk = lines[i]
+    } else {
+      chunk = next
+    }
+  }
+
+  if (chunk) parts.push(chunk)
+}
+
+async function sendParts(progressMessage, parts) {
+  if (parts.length === 0) return
+
+  try {
+    await progressMessage.editText(parts[0])
+  } catch (e) {
+    Bot.sendMessage(parts[0])
+  }
+
+  for (let i = 1; i < parts.length; i++) {
+    Bot.sendMessage(parts[i])
+  }
+}
+
 // ===== MARKET DATA =====
 async function getKlines(symbol, interval, limit) {
   let res = await HTTP.get({
@@ -748,42 +788,45 @@ let tier3List = pickTierCandidates(results, 3, APP.maxAnalysisPerTier)
 let analysisList = uniqueCandidates(tier1List.concat(tier2List).concat(tier3List))
 if (analysisList.length === 0) analysisList = results.slice(0, 5).map(x => ensurePlan(x))
 
-let text = "🔎 XẾP HẠNG TOP " + limit + " COIN THEO BULLISH SCORE (tối đa 10)\n"
-text += "Khung chính: " + selectedTimeframe + " | Xác nhận: H1/H2/H4/D1/D3/W1\n\n"
-text += "| Hạng | Coin | Giá | 24h% | Volume (M) | Score/10 |\n"
-text += "|------|------|-----|------|------------|----------|\n"
+let messageParts = []
+let rankingText = "🔎 XẾP HẠNG TOP " + limit + " COIN THEO BULLISH SCORE (tối đa 10)\n"
+rankingText += "Khung chính: " + selectedTimeframe + " | Xác nhận: H1/H2/H4/D1/D3/W1\n\n"
+rankingText += "| Hạng | Coin | Giá | 24h% | Volume (M) | Score/10 |\n"
+rankingText += "|------|------|-----|------|------------|----------|\n"
 
 for (let i = 0; i < ranking.length; i++) {
   let r = ranking[i]
-  text += "| " + (i + 1) + " | " + r.symbol + " | $" + fmtPrice(r.price) + " | " + r.change.toFixed(2) + "% | $" + r.volume.toFixed(1) + "M | " + r.finalScore + "/10 |\n"
+  rankingText += "| " + (i + 1) + " | " + r.symbol + " | $" + fmtPrice(r.price) + " | " + r.change.toFixed(2) + "% | $" + r.volume.toFixed(1) + "M | " + r.finalScore + "/10 |\n"
 }
 
-text += "\n💡 Tier: Tier 1 = BTC/ETH/BNB an toàn hơn nhưng ROI thấp hơn; Tier 2 = alt thanh khoản tốt; Tier 3 = coin nhỏ hơn, rủi ro cao hơn nhưng có thể ROI tốt hơn.\n"
-text += "Nhận xét: Coin có điểm ≥7 và khung " + selectedTimeframe + " không bearish là nhóm đáng chú ý nhất.\n"
+rankingText += "\n💡 Tier: Tier 1 = BTC/ETH/BNB an toàn hơn nhưng ROI thấp hơn; Tier 2 = alt thanh khoản tốt; Tier 3 = coin nhỏ hơn, rủi ro cao hơn nhưng có thể ROI tốt hơn.\n"
+rankingText += "Nhận xét: Coin có điểm ≥7 và khung " + selectedTimeframe + " không bearish là nhóm đáng chú ý nhất.\n"
 
 if (analysisList.length === 0) {
-  text += "\n⚠️ Không có setup thật sự sạch. Các coin bên dưới chỉ nên xem như watchlist, chưa nên vào lệnh nếu chưa có trigger.\n"
+  rankingText += "\n⚠️ Không có setup thật sự sạch. Các coin bên dưới chỉ nên xem như watchlist, chưa nên vào lệnh nếu chưa có trigger.\n"
 }
 
-text += "\n🤖 Nhận định theo tier:\n\n"
+pushPart(messageParts, "", rankingText)
+
+let tierText = "🤖 Nhận định theo tier:\n\n"
 
 function appendTierSection(title, list) {
   if (list.length === 0) {
-    text += title + "\n"
-    text += "Không có candidate đủ sạch trong tier này.\n\n"
+    tierText += title + "\n"
+    tierText += "Không có candidate đủ sạch trong tier này.\n\n"
     return
   }
 
-  text += title + "\n"
+  tierText += title + "\n"
 
   for (let i = 0; i < list.length; i++) {
     let r = ensurePlan(list[i])
 
-    text += "▪️ " + r.symbol + " (" + r.tierLabel + ", điểm " + r.finalScore + "/10, " + selectedTimeframe + ": " + r.selectedBias + "):\n"
-    text += "   Tier: " + r.tierNote + "\n"
-    text += "   → " + localAdvice(r) + "\n"
-    text += "   Trigger: " + r.trigger + "\n"
-    text += "   Invalidation: " + r.invalidation + "\n\n"
+    tierText += "▪️ " + r.symbol + " (" + r.tierLabel + ", điểm " + r.finalScore + "/10, " + selectedTimeframe + ": " + r.selectedBias + "):\n"
+    tierText += "   Tier: " + r.tierNote + "\n"
+    tierText += "   → " + localAdvice(r) + "\n"
+    tierText += "   Trigger: " + r.trigger + "\n"
+    tierText += "   Invalidation: " + r.invalidation + "\n\n"
   }
 }
 
@@ -791,17 +834,15 @@ appendTierSection("Tier 1 - Market leaders", tier1List)
 appendTierSection("Tier 2 - Alt thanh khoản tốt", tier2List)
 appendTierSection("Tier 3 - Nhỏ hơn, rủi ro cao hơn", tier3List)
 
+pushPart(messageParts, "", tierText)
+
 let aiText = await askDeepSeek(config, analysisList)
 if (aiText) {
-  text += "🧠 DeepSeek góc nhìn thêm:\n" + aiText + "\n\n"
+  pushPart(messageParts, "", "🧠 DeepSeek góc nhìn thêm:\n" + aiText)
 } else {
-  text += "AI: bỏ qua hoặc chưa cấu hình DeepSeek API key.\n\n"
+  pushPart(messageParts, "", "AI: bỏ qua hoặc chưa cấu hình DeepSeek API key.")
 }
 
-text += "Lưu ý: Chỉ là danh sách setup đang theo dõi, không phải lời khuyên đầu tư. Vào lệnh chỉ khi có trigger và quản trị rủi ro."
+pushPart(messageParts, "", "Lưu ý: Chỉ là danh sách setup đang theo dõi, không phải lời khuyên đầu tư. Vào lệnh chỉ khi có trigger và quản trị rủi ro.")
 
-try {
-  await progress.editText(text)
-} catch (e) {
-  Bot.sendMessage(text)
-}
+await sendParts(progress, messageParts)
