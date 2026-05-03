@@ -1,0 +1,23 @@
+---
+description: TeleBotHost TBL JavaScript conventions for the analyze-bot commands
+globs: analyze-bot/**/*.js
+alwaysApply: false
+---
+
+# TeleBotHost TBL Bot Rules
+
+- Treat files in `analyze-bot/**/*.js` as TeleBotHost/TBL command code, not Node.js runtime code.
+- Do not use `fs`, `process`, npm packages, local files, or browser APIs.
+- Use TeleBotHost globals: `Bot`, `Api`, `HTTP`, `User`, `Global`, `Libs`, `modules`, `params`, `options`, `user`, `chat`, `msg`.
+- Prefer standalone command files for TeleBotHost copy-paste. Do not use `require("/command_name")` unless the user confirms that the target bot supports it.
+- Keep command files copy-pasteable into TeleBotHost. Filename should mirror command name, for example `bestcoin.js` maps to `/bestcoin`.
+- For standalone commands longer than ~150 lines, organize code in this order: command header, `APP` config constants, config storage, command params, data parsing helpers, indicators/scoring, setup selection, market data, AI summary, main flow.
+- Put tunable thresholds, limits, weights, timeouts, blocked pairs, model names, and batch sizes in `APP`; do not scatter magic numbers through the file.
+- When a decision has more than 3 branches, prefer `switch (true)` over long `if/else if` chains.
+- Group related indicator functions under an object such as `IndicatorManager` instead of scattering EMA/RSI/MACD/candle/volume helpers as unrelated globals.
+- Classify opportunities into exactly three risk tiers when ranking coins: Tier 1 for BTC/ETH/BNB style majors, Tier 2 for liquid altcoins, Tier 3 for smaller/higher-risk coins. Use tier-aware ranking instead of hardcoding exclusions throughout the flow.
+- Keep the main flow at the bottom and make it read like a short pipeline: parse params -> fetch universe -> analyze batch -> rank/filter -> render output.
+- Prefer `HTTP.get` and `HTTP.post` with explicit `timeout` and defensive response checks.
+- Keep `/bestcoin` analysis on `H1`, `H2`, `H4`, `D1`, `D3`, and `W1` only.
+- For DEX gems, filter risk before TA: liquidity, 24h volume, pool age, holders/concentration if available, honeypot/tax risk if available.
+- Never output guaranteed trade advice. Include risk warning and invalidation when producing trade-style output.

@@ -1,0 +1,29 @@
+# Analyze Bot
+
+TeleBotHost/TBL command files for the Telegram technical-analysis bot.
+
+## Copy To TeleBotHost
+
+Create these commands in TeleBotHost and paste the matching file content:
+
+- `/bestcoin` -> `commands/bestcoin.js`
+
+## Current MVP
+
+`/bestcoin` is a standalone TeleBotHost command. It scans Binance top USDT pairs by 24h quote volume, fetches real candles, builds `H1/H2/H4/D1/D3/W1`, scores EMA/RSI/MACD/candle/volume conditions, then optionally asks DeepSeek to summarize top candidates if `BOT_CONFIG.deepseek_api_key` exists in `Global`.
+
+## Usage
+
+```text
+/bestcoin        # default: D1, top 50
+/bestcoin h1
+/bestcoin h4 100
+/bestcoin d1 50
+```
+
+## Notes
+
+- These files are plain TBL-compatible JavaScript, not Node.js scripts.
+- Do not run them with `node`.
+- `commands/bestcoin.js` intentionally does not use `require()` so it can be pasted as one command.
+- Keep outputs concise because TeleBotHost has execution and output limits.
