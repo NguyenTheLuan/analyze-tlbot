@@ -7,6 +7,7 @@ TeleBotHost/TBL command files for the Telegram technical-analysis bot.
 Create these commands in TeleBotHost and paste the matching file content:
 
 - `/bestcoin` -> `commands/bestcoin.js`
+- `/analyze` -> `commands/analyze.js`
 
 ## Current MVP
 
@@ -15,10 +16,13 @@ Create these commands in TeleBotHost and paste the matching file content:
 ## Usage
 
 ```text
-/bestcoin        # default: D1, top 50
+/bestcoin        # default: D1, top 30, lấy candles cho shortlist
 /bestcoin h1
-/bestcoin h4 100
-/bestcoin d1 50
+/bestcoin h4 50
+/bestcoin d1 30
+/analyze btc
+/analyze pepe h4 futures
+/analyze eth d1 spot
 ```
 
 ## Notes
