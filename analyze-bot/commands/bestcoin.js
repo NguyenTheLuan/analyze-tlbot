@@ -6,10 +6,11 @@ let CONFIG_KEY = "BOT_CONFIG"
 let APP = {
   marketName: "Binance Futures USDT-M",
   futuresBaseUrl: "https://fapi.binance.com",
+  coingeckoMarketsUrl: "https://api.coingecko.com/api/v3/coins/markets",
   defaultTimeframe: "D1",
   defaultLimit: 100,
   minLimit: 10,
-  maxLimit: 100,
+  maxLimit: 500,
   batchSize: 5,
   rankingSize: 10,
   maxAnalysisPerTier: 1,
@@ -21,11 +22,23 @@ let APP = {
   httpTimeout: 8000,
   klineTimeout: 7000,
   aiTimeout: 10000,
-  aiMaxTokens: 220,
+  aiMaxTokens: 580,
   validFrames: { H1: true, H2: true, H4: true, D1: true, D3: true, W1: true },
   frameWeights: { H1: 1, H2: 1, H4: 1.5, D1: 2, D3: 2, W1: 2.5 },
   blockedPairs: ["USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "BUSDUSDT", "DAIUSDT", "EURUSDT", "TRYUSDT"],
   majorCoins: ["BTC", "ETH", "BNB"],
+  tierCap: {
+    tier3Max: 100000000,
+    tier2Max: 1000000000
+  },
+  symbolAliasByBinance: {
+    "1000LUNC": "LUNC",
+    "1000PEPE": "PEPE",
+    "1000BONK": "BONK",
+    "1000SHIB": "SHIB",
+    "1000FLOKI": "FLOKI",
+    "1000X": "X"
+  },
   scoring: {
     minFrameCandles: 35,
     emaFast: 20,
@@ -54,7 +67,12 @@ let APP = {
     selectedBearPenalty: 1.5,
     majorCoinOpportunityPenalty: 1.5,
     triggerBodyMinRatio: 0.5,
-    trapVolumeSpike: 1.3
+    trapVolumeSpike: 1.3,
+    swingLookback: 20,
+    atrPeriod: 14,
+    stopAtrBuffer: 0.5,
+    pullbackAtr: 0.35,
+    minRewardRisk: 1.5
   }
 }
 
@@ -68,6 +86,14 @@ function toSingleLine(text, maxLen) {
   let line = String(text).replace(/\s+/g, " ").trim()
   if (line.length <= maxLen) return line
   return line.slice(0, maxLen - 1).trim() + "…"
+}
+
+/** Đặt mỗi khối Tier 1/2/3 xuống dòng riêng khi model gộp chung một hàng. */
+function formatAiTierLines(text) {
+  if (!text) return ""
+  let t = String(text).trim().replace(/\r\n/g, "\n")
+  t = t.replace(/\s+(Tier\s*[123]\s*[–\-—])/gi, "\n$1")
+  return t.replace(/\n{3,}/g, "\n\n").trim()
 }
 
 // ===== CONFIG STORAGE =====
@@ -98,6 +124,7 @@ function fmtPrice(value) {
 }
 
 function fmtMoney(value) {
+  if (!value || value <= 0) return "N/A"
   if (value >= 1000000000) return "$" + (value / 1000000000).toFixed(2) + "B"
   if (value >= 1000000) return "$" + (value / 1000000).toFixed(1) + "M"
   if (value >= 1000) return "$" + (value / 1000).toFixed(1) + "K"
@@ -246,6 +273,36 @@ let IndicatorManager = {
     }
   },
 
+  atr: function(candles, period) {
+    if (!candles || candles.length <= period) return null
+
+    let trs = []
+    for (let i = candles.length - period; i < candles.length; i++) {
+      let current = candles[i]
+      let prev = candles[i - 1]
+      let tr = Math.max(
+        current.h - current.l,
+        Math.abs(current.h - prev.c),
+        Math.abs(current.l - prev.c)
+      )
+      trs.push(tr)
+    }
+
+    return this.sma(trs, period)
+  },
+
+  swingLevels: function(candles, lookback) {
+    if (!candles || candles.length < lookback) {
+      return { high: null, low: null }
+    }
+
+    let slice = candles.slice(candles.length - lookback)
+    return {
+      high: Math.max.apply(null, slice.map(x => x.h)),
+      low: Math.min.apply(null, slice.map(x => x.l))
+    }
+  },
+
   frameContext: function(candles) {
     let closes = candles.map(x => x.c)
     let volumes = candles.map(x => x.qv || x.v)
@@ -259,6 +316,8 @@ let IndicatorManager = {
       rsi: this.rsi(closes, APP.scoring.rsiPeriod),
       macd: this.macdState(closes),
       candle: this.candleState(candles),
+      atr: this.atr(candles, APP.scoring.atrPeriod),
+      swing: this.swingLevels(candles, APP.scoring.swingLookback),
       volumeAverage: this.sma(volumes, Math.min(APP.scoring.volumeLookback, volumes.length))
     }
   }
@@ -452,26 +511,26 @@ function isMajorCoin(symbol) {
 }
 
 function getTier(candidate) {
-  if (isMajorCoin(candidate.symbol)) {
+  if (candidate.marketCap && candidate.marketCap > APP.tierCap.tier2Max) {
     return {
       id: 1,
       label: "Tier 1",
-      note: "coin lớn, thanh khoản cao, ROI thường thấp hơn nhưng rủi ro thấp hơn"
+      note: "market cap > 1B, nhóm vốn hóa lớn"
     }
   }
 
-  if (candidate.volume >= APP.scoring.tier2VolumeM) {
+  if (candidate.marketCap && candidate.marketCap >= APP.tierCap.tier3Max) {
     return {
       id: 2,
       label: "Tier 2",
-      note: "altcoin thanh khoản tốt, ROI/rủi ro cân bằng hơn"
+      note: "market cap 100M–1B, nhóm vốn hóa trung bình"
     }
   }
 
   return {
     id: 3,
     label: "Tier 3",
-    note: "coin nhỏ hơn, ROI có thể cao hơn nhưng rủi ro lớn hơn"
+    note: "market cap < 100M hoặc chưa xác định, rủi ro cao"
   }
 }
 
@@ -485,6 +544,10 @@ function opportunityScore(candidate) {
   if (candidate.change > APP.scoring.tooHotPct) score -= 2
   if (candidate.volume < APP.scoring.minPlayableVolumeM) score -= 1
   if (candidate.selectedBias === "BULLISH") score += 0.5
+  if (candidate.turnoverRatio != null) {
+    if (candidate.turnoverRatio >= 0.08 && candidate.turnoverRatio <= 1.5) score += 0.5
+    if (candidate.turnoverRatio > 2.5) score -= 0.75
+  }
 
   return score
 }
@@ -534,6 +597,61 @@ function setupPlan(candidate) {
     reason: reason,
     trigger: trigger,
     invalidation: invalidation
+  }
+}
+
+/** Gợi ý điểm vào LONG trên khung chính (chỉ Entry, không hiển thị SL/TP). */
+function buildQuickLongPlan(candidate) {
+  let candles = candidate.frameCandles
+  if (!candles || candles.length < APP.scoring.minFrameCandles) {
+    return null
+  }
+
+  if (candidate.selectedBias === "BEARISH") {
+    return {
+      line:
+        "Không gợi ý LONG (khung " +
+        candidate.timeframe +
+        " bearish) — xem /a " +
+        candidate.symbol +
+        " nếu cần short.",
+      entry: null,
+      entryType: "N/A",
+      skipLong: true
+    }
+  }
+
+  let ctx = IndicatorManager.frameContext(candles)
+  let atr = ctx.atr || candidate.price * 0.02
+  let price = candidate.price
+  let entry
+  let entryType
+
+  switch (true) {
+    case candidate.selectedBias === "BULLISH" && candidate.change > APP.scoring.hotMovePct:
+      entry = Math.max(ctx.emaFast || price - atr, price - atr * APP.scoring.pullbackAtr)
+      entryType = "Limit pullback (24h nóng)"
+      break
+    case candidate.selectedBias === "BULLISH":
+      entry = ctx.emaFast && ctx.emaFast < price ? ctx.emaFast : price
+      entryType = entry < price ? "Limit EMA20/retest" : "Market sau nến xác nhận"
+      break
+    default:
+      entry = ctx.emaFast || price
+      entryType = "Chờ breakout/retest"
+  }
+
+  let line =
+    "📍 Gợi ý LONG (" +
+    entryType +
+    "): Entry ~$" +
+    fmtPrice(entry)
+
+  return {
+    line: line,
+    entry: entry,
+    entryType: entryType,
+    skipLong: false
   }
 }
 
@@ -615,6 +733,9 @@ function ensurePlan(candidate) {
     candidate.trigger = plan.trigger
     candidate.invalidation = plan.invalidation
   }
+  if (candidate.quickPlan === undefined) {
+    candidate.quickPlan = buildQuickLongPlan(candidate)
+  }
 
   return candidate
 }
@@ -657,7 +778,61 @@ async function getKlines(symbol, interval, limit) {
   return parseKlines(res.data)
 }
 
-async function analyzeCoin(coin, selectedTimeframe) {
+function normalizeForCoinGecko(symbol) {
+  let base = String(symbol || "").toUpperCase()
+  if (APP.symbolAliasByBinance[base]) return APP.symbolAliasByBinance[base].toLowerCase()
+  return base.replace(/^1000/, "").toLowerCase()
+}
+
+async function loadMarketCapMap(symbols) {
+  let out = {}
+  if (!symbols || symbols.length === 0) return out
+
+  try {
+    let pages = [1, 2]
+    let requests = pages.map(async page => {
+      return await HTTP.get({
+        url:
+          APP.coingeckoMarketsUrl +
+          "?vs_currency=usd&order=market_cap_desc&per_page=250&page=" +
+          page +
+          "&sparkline=false",
+        timeout: APP.httpTimeout
+      })
+    })
+    let responses = await Promise.all(requests)
+    let all = []
+    for (let i = 0; i < responses.length; i++) {
+      if (responses[i] && responses[i].ok && Array.isArray(responses[i].data)) {
+        all = all.concat(responses[i].data)
+      }
+    }
+    if (all.length === 0) return out
+
+    let bySymbol = {}
+    for (let i = 0; i < all.length; i++) {
+      let row = all[i]
+      let sym = String(row.symbol || "").toLowerCase()
+      if (!sym) continue
+      if (!bySymbol[sym] || (row.market_cap || 0) > (bySymbol[sym].market_cap || 0)) {
+        bySymbol[sym] = row
+      }
+    }
+
+    for (let i = 0; i < symbols.length; i++) {
+      let s = symbols[i]
+      let key = normalizeForCoinGecko(s)
+      let row = bySymbol[key]
+      out[s] = row && row.market_cap ? n(row.market_cap) : null
+    }
+  } catch (e) {
+    return out
+  }
+
+  return out
+}
+
+async function analyzeCoin(coin, selectedTimeframe, marketCapMap) {
   let pairData = await Promise.all([
     getKlines(coin.symbol, "1h", APP.h1KlineLimit),
     getKlines(coin.symbol, "1d", APP.d1KlineLimit)
@@ -681,12 +856,19 @@ async function analyzeCoin(coin, selectedTimeframe) {
   if (finalScore < 0) finalScore = 0
   if (finalScore > 10) finalScore = 10
 
+  let baseSymbol = coin.symbol.replace("USDT", "")
+  let marketCap = marketCapMap && marketCapMap[baseSymbol] ? marketCapMap[baseSymbol] : null
   let result = {
-    symbol: coin.symbol.replace("USDT", ""),
+    symbol: baseSymbol,
     pair: coin.symbol,
     price: coin.price,
     change: coin.change,
     volume: coin.volume,
+    marketCap: marketCap,
+    turnoverRatio:
+      marketCap && marketCap > 0
+        ? (coin.volume * 1000000) / marketCap
+        : null,
     taScore: ta.score,
     finalScore: finalScore,
     bias: ta.bias,
@@ -697,7 +879,8 @@ async function analyzeCoin(coin, selectedTimeframe) {
     triggerSignal: triggerSignal,
     trapSignal: trapSignal,
     timeframe: selectedTimeframe,
-    frames: ta.frames
+    frames: ta.frames,
+    frameCandles: ta.frameCandles
   }
 
   let tier = getTier(result)
@@ -708,14 +891,14 @@ async function analyzeCoin(coin, selectedTimeframe) {
   return result
 }
 
-async function analyzeBatch(coins, batchSize, selectedTimeframe) {
+async function analyzeBatch(coins, batchSize, selectedTimeframe, marketCapMap) {
   let output = []
 
   for (let i = 0; i < coins.length; i += batchSize) {
     let chunk = coins.slice(i, i + batchSize)
     let analyzed = await Promise.all(chunk.map(async coin => {
       try {
-        return await analyzeCoin(coin, selectedTimeframe)
+        return await analyzeCoin(coin, selectedTimeframe, marketCapMap)
       } catch (e) {
         return null
       }
@@ -733,25 +916,58 @@ async function analyzeBatch(coins, batchSize, selectedTimeframe) {
 async function askDeepSeek(config, candidates) {
   if (!config || !config.deepseek_api_key || candidates.length === 0) return ""
 
-  let compact = candidates.map((x, i) => (
-    (i + 1) + ". " + x.symbol +
-    " tier=" + x.tier +
-    " score=" + x.finalScore + "/10" +
-    ", bias=" + x.bias +
-    ", " + x.timeframe + "=" + x.selectedBias +
-    ", rsi=" + (x.selectedRsi || "unknown") +
-    ", 24h=" + x.change.toFixed(2) + "%" +
-    ", vol=" + x.volume.toFixed(1) + "M" +
-    ", regime=" + (x.regime ? x.regime.regime : "N/A") +
-    ", trigger=" + (x.triggerSignal ? x.triggerSignal.note : "N/A") +
-    ", trap=" + (x.trapSignal ? x.trapSignal.note : "N/A") +
-    ", frames=" + x.frames
-  )).join("\n")
+  let compact = candidates
+    .map((x, i) => {
+      let r = ensurePlan(x)
+      let qp =
+        r.quickPlan && r.quickPlan.line
+          ? r.quickPlan.line.replace(/^📍\s*/, "")
+          : "chưa tính được"
+      return (
+        (i + 1) +
+        ". " +
+        r.symbol +
+        " tier=" +
+        r.tier +
+        " score=" +
+        r.finalScore +
+        "/10" +
+        ", bias=" +
+        r.bias +
+        ", " +
+        r.timeframe +
+        "=" +
+        r.selectedBias +
+        ", rsi=" +
+        (r.selectedRsi || "unknown") +
+        ", 24h=" +
+        r.change.toFixed(2) +
+        "%" +
+        ", vol=" +
+        r.volume.toFixed(1) +
+        "M" +
+        ", regime=" +
+        (r.regime ? r.regime.regime : "N/A") +
+        ", trigger=" +
+        (r.triggerSignal ? r.triggerSignal.note : "N/A") +
+        ", trap=" +
+        (r.trapSignal ? r.trapSignal.note : "N/A") +
+        ", gợi ý giá=" +
+        qp +
+        ", frames=" +
+        r.frames
+      )
+    })
+    .join("\n")
 
   let prompt =
     "Bạn là trader fulltime hơn 10 năm kinh nghiệm. Dưới đây là các coin đã được lọc bằng TA thật từ H1,H2,H4,D1,D3,W1.\n" +
-    "Tóm tắt toàn bộ trong tối đa 3 dòng. Mỗi dòng cực ngắn, ưu tiên coin đáng chú ý nhất từng tier.\n" +
-    "Nếu coin tăng quá nóng, ưu tiên nói thận trọng chốt lời/quan sát/chờ điều chỉnh. Không hứa lợi nhuận, không nói chắc chắn, không bịa dữ liệu.\n\n" +
+    "Mỗi coin có dòng 'gợi ý giá=' là Entry tham khảo từ bot (khung chính), không phải lệnh thật.\n" +
+    "Viết đúng 3 dòng (mỗi tier một dòng), xuống dòng giữa các tier. Định dạng bắt buộc mỗi dòng:\n" +
+    "Tier 1 – SYMBOL: <nhận định đầy đủ; có thể nhắc ngắn gọn mức Entry nếu hợp lý với rủi ro, không bịa số khác>\n" +
+    "Tier 2 – SYMBOL: ...\n" +
+    "Tier 3 – SYMBOL: ...\n" +
+    "Dùng đúng symbol trong dữ liệu. Nếu coin tăng quá nóng, ưu tiên cảnh báo chốt lời/quan sát/chờ điều chỉnh. Không hứa lợi nhuận, không nói chắc chắn, không bịa dữ liệu.\n\n" +
     compact
 
   try {
@@ -824,7 +1040,8 @@ let top = tickers.slice(0, limit).map(t => ({
   volume: n(t.quoteVolume) / 1000000
 }))
 
-let results = await analyzeBatch(top, APP.batchSize, selectedTimeframe)
+let marketCapMap = await loadMarketCapMap(top.map(x => x.symbol.replace("USDT", "")))
+let results = await analyzeBatch(top, APP.batchSize, selectedTimeframe, marketCapMap)
 
 if (results.length === 0) {
   await progress.editText("Không phân tích được coin nào. Thử lại sau.")
@@ -852,7 +1069,7 @@ for (let i = 0; i < compactRanking.length; i++) {
   rankingText += "| " + (i + 1) + " | " + r.symbol + " | $" + fmtPrice(r.price) + " | " + r.change.toFixed(2) + "% | $" + r.volume.toFixed(1) + "M | " + r.finalScore + "/10 |\n"
 }
 
-rankingText += "\n💡 Tier 1: BTC/ETH/BNB | Tier 2: alt thanh khoản tốt | Tier 3: nhỏ hơn/rủi ro cao hơn.\n"
+rankingText += "\n💡 Tier theo market cap: Tier1 > $1B | Tier2: $100M–$1B | Tier3: < $100M (hoặc chưa có MC).\n"
 rankingText += "Điểm ≥7 và khung " + selectedTimeframe + " không bearish là nhóm đáng chú ý.\n"
 
 if (analysisList.length === 0) {
@@ -876,6 +1093,7 @@ function appendTierSection(title, list) {
 
     tierText += "▪️ " + r.symbol + " (" + r.tierLabel + ", điểm " + r.finalScore + "/10, " + selectedTimeframe + ": " + r.selectedBias + "):\n"
     tierText += "   → " + localAdvice(r) + "\n"
+    if (r.quickPlan && r.quickPlan.line) tierText += "   " + r.quickPlan.line + "\n"
     if (r.regime) tierText += "   Regime: " + r.regime.regime + " — " + r.regime.note + "\n"
     if (r.trapSignal) tierText += "   Trap: " + r.trapSignal.note + "\n"
     tierText += "   Trigger: " + r.trigger + "\n\n"
@@ -932,6 +1150,9 @@ if (compactMode) {
       " | " +
       (r.triggerSignal ? r.triggerSignal.note : "N/A") +
       "\n"
+    if (r.quickPlan && r.quickPlan.line) {
+      finalText += "   " + r.quickPlan.line + "\n"
+    }
   }
   if (analysisList.length === 0) {
     finalText += "• Chưa có setup sạch, ưu tiên watchlist.\n"
@@ -940,14 +1161,14 @@ if (compactMode) {
 
 if (aiText && (finalText + msgDiv + "🧠 DeepSeek:\n" + aiText).length < APP.telegramSafeLimit) {
   if (compactMode) {
-    finalText += msgDiv + "🧠 AI: " + toSingleLine(aiText, 180) + "\n"
+    finalText += msgDiv + "🧠 AI:\n" + formatAiTierLines(aiText) + "\n"
   } else {
-    finalText += msgDiv + "🧠 DeepSeek:\n" + aiText + "\n"
+    finalText += msgDiv + "🧠 DeepSeek:\n" + formatAiTierLines(aiText) + "\n"
   }
 }
 
 let riskNote =
-  "⚠️ Chỉ là setup theo dõi, không phải lời khuyên đầu tư. Chỉ vào lệnh khi có trigger và quản trị rủi ro."
+  "⚠️ Chỉ là setup theo dõi, không phải lời khuyên đầu tư. Entry là gợi ý tham khảo (khung chính); chỉ vào lệnh khi có trigger, dùng /a để soi kỹ hơn, và luôn quản trị rủi ro."
 if ((finalText + msgDiv + riskNote).length < APP.telegramSafeLimit) {
   finalText += msgDiv + riskNote
 }
