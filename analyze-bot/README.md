@@ -6,8 +6,10 @@ TeleBotHost/TBL command files for the Telegram technical-analysis bot.
 
 Create these commands in TeleBotHost and paste the matching file content:
 
+- `/help` -> `commands/help.js`
 - `/bestcoin` -> `commands/bestcoin.js`
 - `/analyze` -> `commands/analyze.js`
+- `/gold` -> `commands/gold.js` (XAU/USD, khung H1–W1 gồm H8)
 - `/hidden-gems` -> `commands/hidden-gems.js` (meme DEX: DexScreener boosts, fallback GeckoTerminal trending nếu chain ít boost — ví dụ Base; pool ≥ ~3 tháng + GoPlus khi có)
 
 ## Current MVP
@@ -17,13 +19,17 @@ Create these commands in TeleBotHost and paste the matching file content:
 ## Usage
 
 ```text
-/bestcoin        # default: D1, top 30, lấy candles cho shortlist
+/help
+/bestcoin        # default: D1, top 100
 /bestcoin h1
 /bestcoin h4 50
 /bestcoin d1 30
 /analyze btc
 /analyze pepe h4 futures
 /analyze eth d1 spot
+/gold
+/gold h4
+/gold w1
 /hidden-gems
 /hidden-gems eth
 /hidden-gems bsc
