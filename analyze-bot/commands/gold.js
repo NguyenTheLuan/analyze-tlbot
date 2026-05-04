@@ -7,10 +7,10 @@ let APP = {
   yahooUserAgent: "Mozilla/5.0 (Windows NT 10.0; rv:128.0) Gecko/20100101 Firefox/128.0",
   swissquoteXauUrl: "https://forex-data-feed.swissquote.com/public-quotes/bboquotes/instrument/XAU/USD",
   defaultTimeframe: "D1",
-  validFrames: { H1: true, H2: true, H4: true, D1: true, D3: true, W1: true },
+  validFrames: { H1: true, H2: true, H4: true, H8: true, D1: true, D3: true, W1: true },
   httpTimeout: 12000,
   aiTimeout: 15000,
-  aiMaxTokens: 640,
+  aiMaxTokens: 800,
   h1Range: "2y",
   d1Range: "10y",
   h1KlineLimit: 240,
@@ -18,7 +18,7 @@ let APP = {
   telegramChunkMax: 3900,
   telegramSectionDivider: "------------------------------\n",
   compactModeDefault: true,
-  frameWeights: { H1: 1, H2: 1, H4: 1.5, D1: 2, D3: 2, W1: 2.5 },
+  frameWeights: { H1: 1, H2: 1, H4: 1.5, H8: 1.75, D1: 2, D3: 2, W1: 2.5 },
   volumePulseWindows: [1, 2, 3, 4, 6, 12],
   /* Chỉ báo tối ưu cho XAU/USD: EMA 21/55 (MT4/FX phổ biến), RSI nới nhẹ vì vàng trend dai; nhiệt D1 vs H1 tách bạch */
   scoring: {
@@ -87,34 +87,6 @@ function cleanAiText(text) {
   return body.trim()
 }
 
-function filterAiTradeDup(text, keepPriceLevels) {
-  if (!text) return ""
-  let lines = String(text).split("\n")
-  let kept = []
-  for (let i = 0; i < lines.length; i++) {
-    let line = lines[i].trim()
-    if (!line) {
-      kept.push("")
-      continue
-    }
-    let low = line.toLowerCase()
-    let isDupTradeLine = false
-    if (!keepPriceLevels) {
-      isDupTradeLine =
-        low.indexOf("entry") >= 0 ||
-        low.indexOf("stop loss") >= 0 ||
-        low.indexOf("tp1") >= 0 ||
-        low.indexOf("tp2") >= 0 ||
-        low.indexOf("tp3") >= 0 ||
-        low.indexOf("r:r") >= 0 ||
-        low.indexOf("invalidation") >= 0 ||
-        (low.indexOf("break") >= 0 && low.indexOf("$") >= 0)
-    }
-    if (!isDupTradeLine) kept.push(lines[i])
-  }
-  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim()
-}
-
 /** Bỏ dòng chỉ có bullet rỗng (model thỉnh thoảng trả "-" một mình). */
 function formatAiBulletLines(text) {
   if (!text) return ""
@@ -131,7 +103,7 @@ function formatAiBulletLines(text) {
 }
 
 function isIntradayTf(tf) {
-  return tf === "H1" || tf === "H2" || tf === "H4"
+  return tf === "H1" || tf === "H2" || tf === "H4" || tf === "H8"
 }
 
 function heatForPrimaryTf(timeframe, changeD1, changeH1) {
@@ -541,6 +513,7 @@ function analyzeFrames(h1, d1, selectedTimeframe) {
     H1: h1,
     H2: aggregate(h1, 2),
     H4: aggregate(h1, 4),
+    H8: aggregate(h1, 8),
     D1: d1,
     D3: aggregate(d1, 3),
     W1: aggregate(d1, 7)
@@ -1802,20 +1775,14 @@ async function loadYahooGoldSeries(symbolEncoded, sourceLabel) {
 }
 
 async function loadGoldData() {
-  let xau = await loadYahooGoldSeries(
-    APP.yahooSymbolXau,
-    "Yahoo · XAU/USD (spot FX — broker kiểu Exness/OANDA, không phải token/crypto)"
-  )
+  let xau = await loadYahooGoldSeries(APP.yahooSymbolXau, "Yahoo · XAU/USD spot")
   if (xau.ok) {
     xau.spot = await fetchSwissquoteSpot()
     xau.taKind = "SPOT_XAU"
     return xau
   }
 
-  let gc = await loadYahooGoldSeries(
-    APP.yahooSymbolGcFutures,
-    "Yahoo · GC=F (COMEX vàng tương lai — KHÁC spot XAU/OANDA; có thể lệch vài chục USD/oz)"
-  )
+  let gc = await loadYahooGoldSeries(APP.yahooSymbolGcFutures, "Yahoo · GC=F")
   if (gc.ok) {
     gc.spot = await fetchSwissquoteSpot()
     gc.taKind = "COMEX_GC"
@@ -1835,9 +1802,9 @@ async function askDeepSeek(config, data, marketData) {
   let scalpL = buildScalpUltraCompact(data)
 
   let prompt =
-    "Bạn là trader XAU/USD (spot hoặc GC=F nếu nguồn ghi). Trả lời tiếng Việt rõ ràng: 5–10 gạch đầu dòng ngắn (ưu tiên bắt đầu bằng '- '), đủ ý để hành động — không nhồi dài dòng.\n" +
-    "Không hứa lợi nhuận; không bịa tin vĩ mô; không tự bịa mức giá lạ so với dữ liệu. Được phép nhận xét ngắn gọn về Entry/SL/TP2 bot đưa (góc rủi ro), không lặp lại nguyên xi cả khối số.\n" +
-    "Không mâu thuẫn với bias khung chính, Vol signal và Regime trong dữ liệu.\n" +
+    "Bạn là trader XAU/USD (spot hoặc GC=F nếu nguồn ghi). Trả lời tiếng Việt dạng gạch đầu dòng: khoảng 8–12 dòng, mỗi dòng bắt đầu bằng '- ', mỗi dòng 1–2 câu ngắn — ưu tiên SÂU và CỤ THỂ như bản phân tích tay (không siết quá 4 dòng).\n" +
+    "Nên lần lượt có các ý (có thể gộp nếu gọn, không cần tiêu đề cứng): xu hướng đa khung + Frames/RSI; hành động (WAIT / LONG / SHORT CFD / tránh bắt đáy); phiên & spread/slippage; nhận xét Entry/SL/TP2/R:R bot so với giá spot/TA hiện tại (hợp lý hay quá xa/rộng); hỗ trợ–kháng–neo từ dữ liệu; regime choppy/sweep/Stoch nếu liên quan; khung H1/H4 vs không khuyến khích M5/M15; kết luận 1 dòng.\n" +
+    "Không hứa lợi nhuận; không bịa tin vĩ mô; không tự bịa mức giá lạ ngoài dữ liệu. Không mâu thuận Vol signal, Regime và bias hệ thống. Không copy nguyên xi cả khối số từ prompt — diễn giải, so sánh khoảng cách giá.\n" +
     "Dữ liệu tóm tắt:\n" +
     "- " +
     data.source +
@@ -1919,7 +1886,7 @@ async function askDeepSeek(config, data, marketData) {
         fmtPrice(data.tradePlanWeek.tp2) +
         "\n"
       : "") +
-    "\nNội dung cần có: xu hướng đa khung; WAIT vs LONG vs SHORT (CFD) nếu hợp bối cảnh; phiên/spread/slippage; nhận xét ngắn về mức giá bot (nếu cần)."
+    "\nChỉ trả về các dòng bullet, không đoạn mở đầu dài; không dòng chỉ có '-'."
 
   try {
     let response = await HTTP.post({
@@ -1970,7 +1937,7 @@ if (!marketData.ok) {
   return
 }
 
-await progress.editText("Đang phân tích XAU — " + marketData.source + ", khung " + command.timeframe + "...")
+await progress.editText("Đang phân tích XAU — khung " + command.timeframe + "...")
 
 let ta = analyzeFrames(marketData.h1, marketData.d1, command.timeframe)
 let volPulse = analyzeVolumePulse(marketData.h1)
@@ -2043,7 +2010,7 @@ if (
 }
 let aiText = await askDeepSeek(config, data, marketData)
 let aiPriceReview = isAiPriceReviewEnabled(config)
-aiText = formatAiBulletLines(filterAiTradeDup(cleanAiText(aiText), aiPriceReview))
+aiText = formatAiBulletLines(cleanAiText(aiText))
 let compactMode = isCompactMode(config)
 
 let spotMid = marketData.spot ? marketData.spot.mid : null
@@ -2052,11 +2019,10 @@ let useSpotScale =
 
 let msgDiv = APP.telegramSectionDivider
 
-let text = "🥇 XAU / VÀNG — PHÂN TÍCH KỸ THUẬT\n"
+let text = "🥇 Vàng · khung " + data.timeframe + "\n"
 if (compactMode) {
   text += msgDiv
-  text += "📡 " + marketData.source + "\n"
-  text += "⏱ " + data.timeframe + " | 🧭 " + data.score + "/10 | Bias " + data.bias + " (" + data.timeframe + ":" + data.selectedBias + ")\n"
+  text += "🧭 " + data.score + "/10 | Đa khung " + data.bias + " | " + data.timeframe + ": " + data.selectedBias + "\n"
   text += "💰 TA $" + fmtPrice(marketData.taLast) + " | ΔH1 " + marketData.changeH1.toFixed(3) + "% | ΔD1 " + marketData.changeD1.toFixed(3) + "%\n"
   if (data.volPulse) text += "🔊 Vol signal: " + toSingleLine(data.volPulse.summary, 140) + "\n"
   if (data.regime) {
@@ -2082,14 +2048,12 @@ if (compactMode) {
   } else text += "\n🧠 AI: chưa bật API key.\n"
 } else {
   text += msgDiv
-  text += "📡 " + marketData.source + "\n"
   if (marketData.spot) {
     text += "💵 Spot: " + fmtPrice(marketData.spot.bid) + " – " + fmtPrice(marketData.spot.ask) + " | mid ≈ $" + fmtPrice(marketData.spot.mid) + "\n"
   }
   text += "📈 TA (đóng H1 cuối): $" + fmtPrice(marketData.taLast) + "/oz\n"
   text += "📊 Δ H1 " + marketData.changeH1.toFixed(3) + "% | Δ D1 " + marketData.changeD1.toFixed(3) + "%\n"
   if (marketData.taKind === "COMEX_GC") text += "ℹ️ GC=F lệch spot broker; % ngắn hạn gần Δ H1 hơn Δ D1.\n"
-  text += "⏱️ Khung chính: " + data.timeframe + "\n"
   text += "🧭 " + data.score + "/10 | Đa khung " + data.bias + " | " + data.timeframe + ": " + data.selectedBias + "\n"
   text += "🧩 " + data.frames + "\n"
   if (data.volPulse) text += "🔊 Vol signal: " + data.volPulse.summary + "\n"
