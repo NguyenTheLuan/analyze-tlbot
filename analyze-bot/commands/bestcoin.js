@@ -88,12 +88,27 @@ function toSingleLine(text, maxLen) {
   return line.slice(0, maxLen - 1).trim() + "…"
 }
 
-/** Đặt mỗi khối Tier 1/2/3 xuống dòng riêng khi model gộp chung một hàng. */
+/** Chuẩn hóa output AI về dạng "- SYMBOL: ...", không lặp Tier. */
 function formatAiTierLines(text) {
   if (!text) return ""
   let t = String(text).trim().replace(/\r\n/g, "\n")
   t = t.replace(/\s+(Tier\s*[123]\s*[–\-—])/gi, "\n$1")
-  return t.replace(/\n{3,}/g, "\n\n").trim()
+  t = t.replace(/\n{3,}/g, "\n\n").trim()
+  return t
+    .split("\n")
+    .map(function (line) {
+      line = line.trim()
+      if (!line) return ""
+      if (line === "-" || line === "•" || line === "*") return ""
+      line = line.replace(/^[-*•]\s+/, "")
+      line = line.replace(/^Tier\s*[123]\s*[–\-—]\s*/i, "")
+      if (!/^-\s/.test(line)) line = "- " + line
+      return line
+    })
+    .filter(function (line) {
+      return line.length > 0
+    })
+    .join("\n")
 }
 
 // ===== CONFIG STORAGE =====
@@ -655,6 +670,36 @@ function buildQuickLongPlan(candidate) {
   }
 }
 
+function entryTypeToShortHint(entryType) {
+  switch (entryType) {
+    case "Limit EMA20/retest":
+      return "EMA20/retest"
+    case "Limit pullback (24h nóng)":
+      return "pullback 24h nóng"
+    case "Market sau nến xác nhận":
+      return "nến xác nhận"
+    case "Chờ breakout/retest":
+      return "breakout/retest"
+    default:
+      return entryType ? String(entryType).replace(/^Limit\s+/, "") : ""
+  }
+}
+
+/** Một dòng: Chờ/Có … trigger LONG Entry ~$… (dùng trong /bc compact). */
+function tierTriggerEntryOneLine(r) {
+  let qp = r.quickPlan
+  if (qp && qp.skipLong) {
+    return qp.line
+  }
+  if (qp && qp.entry != null && r.triggerSignal) {
+    let hint = entryTypeToShortHint(qp.entryType)
+    let verb = r.triggerSignal.longConfirmed ? "Có" : "Chờ"
+    return verb + " " + hint + " trigger LONG Entry ~$" + fmtPrice(qp.entry)
+  }
+  if (r.triggerSignal) return r.triggerSignal.note
+  return "N/A"
+}
+
 function pickPlayable(results) {
   let nonTier1 = results.filter(x => x.tier !== 1)
   let strict = results.filter(x =>
@@ -919,10 +964,7 @@ async function askDeepSeek(config, candidates) {
   let compact = candidates
     .map((x, i) => {
       let r = ensurePlan(x)
-      let qp =
-        r.quickPlan && r.quickPlan.line
-          ? r.quickPlan.line.replace(/^📍\s*/, "")
-          : "chưa tính được"
+      let qp = tierTriggerEntryOneLine(r)
       return (
         (i + 1) +
         ". " +
@@ -952,7 +994,7 @@ async function askDeepSeek(config, candidates) {
         (r.triggerSignal ? r.triggerSignal.note : "N/A") +
         ", trap=" +
         (r.trapSignal ? r.trapSignal.note : "N/A") +
-        ", gợi ý giá=" +
+        ", trigger_entry=" +
         qp +
         ", frames=" +
         r.frames
@@ -962,11 +1004,11 @@ async function askDeepSeek(config, candidates) {
 
   let prompt =
     "Bạn là trader fulltime hơn 10 năm kinh nghiệm. Dưới đây là các coin đã được lọc bằng TA thật từ H1,H2,H4,D1,D3,W1.\n" +
-    "Mỗi coin có dòng 'gợi ý giá=' là Entry tham khảo từ bot (khung chính), không phải lệnh thật.\n" +
-    "Viết đúng 3 dòng (mỗi tier một dòng), xuống dòng giữa các tier. Định dạng bắt buộc mỗi dòng:\n" +
-    "Tier 1 – SYMBOL: <nhận định đầy đủ; có thể nhắc ngắn gọn mức Entry nếu hợp lý với rủi ro, không bịa số khác>\n" +
-    "Tier 2 – SYMBOL: ...\n" +
-    "Tier 3 – SYMBOL: ...\n" +
+    "Mỗi coin có 'trigger_entry=' là một dòng gộp (chờ/có trigger + gợi ý Entry) từ bot (khung chính), không phải lệnh thật.\n" +
+    "Viết đúng 3 dòng (mỗi coin một dòng), xuống dòng rõ ràng. Mỗi dòng phải bắt đầu bằng '- ' (dấu gạch ngang và khoảng trắng). Định dạng bắt buộc:\n" +
+    "- SYMBOL: <nhận định đầy đủ; có thể nhắc ngắn cùng ý với trigger_entry, không bịa số khác>\n" +
+    "- SYMBOL: ...\n" +
+    "- SYMBOL: ...\n" +
     "Dùng đúng symbol trong dữ liệu. Nếu coin tăng quá nóng, ưu tiên cảnh báo chốt lời/quan sát/chờ điều chỉnh. Không hứa lợi nhuận, không nói chắc chắn, không bịa dữ liệu.\n\n" +
     compact
 
@@ -1093,7 +1135,7 @@ function appendTierSection(title, list) {
 
     tierText += "▪️ " + r.symbol + " (" + r.tierLabel + ", điểm " + r.finalScore + "/10, " + selectedTimeframe + ": " + r.selectedBias + "):\n"
     tierText += "   → " + localAdvice(r) + "\n"
-    if (r.quickPlan && r.quickPlan.line) tierText += "   " + r.quickPlan.line + "\n"
+    tierText += "   → " + tierTriggerEntryOneLine(r) + "\n"
     if (r.regime) tierText += "   Regime: " + r.regime.regime + " — " + r.regime.note + "\n"
     if (r.trapSignal) tierText += "   Trap: " + r.trapSignal.note + "\n"
     tierText += "   Trigger: " + r.trigger + "\n\n"
@@ -1110,7 +1152,7 @@ let compactMode = isCompactMode(config)
 let finalText = rankingText + "\n" + msgDiv + tierText
 
 if (compactMode) {
-  let compactTop = ranking.slice(0, 5)
+  let compactTop = ranking
   finalText = "🔎 TOP " + limit + " COIN (rút gọn) — " + selectedTimeframe + "\n"
   finalText += "Market: " + APP.marketName + "\n"
   finalText += msgDiv
@@ -1135,7 +1177,7 @@ if (compactMode) {
   for (let i = 0; i < analysisList.length; i++) {
     let r = ensurePlan(analysisList[i])
     finalText +=
-      "• " +
+      "- " +
       r.symbol +
       " (" +
       r.tierLabel +
@@ -1148,14 +1190,11 @@ if (compactMode) {
       " | " +
       (r.regime ? r.regime.regime : "N/A") +
       " | " +
-      (r.triggerSignal ? r.triggerSignal.note : "N/A") +
+      tierTriggerEntryOneLine(r) +
       "\n"
-    if (r.quickPlan && r.quickPlan.line) {
-      finalText += "   " + r.quickPlan.line + "\n"
-    }
   }
   if (analysisList.length === 0) {
-    finalText += "• Chưa có setup sạch, ưu tiên watchlist.\n"
+    finalText += "- Chưa có setup sạch, ưu tiên watchlist.\n"
   }
 }
 
