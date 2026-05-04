@@ -7,7 +7,7 @@ let APP = {
   marketName: "Binance Futures USDT-M",
   futuresBaseUrl: "https://fapi.binance.com",
   defaultTimeframe: "D1",
-  defaultLimit: 50,
+  defaultLimit: 100,
   minLimit: 10,
   maxLimit: 100,
   batchSize: 5,
@@ -15,6 +15,7 @@ let APP = {
   maxAnalysisPerTier: 1,
   telegramSafeLimit: 3800,
   telegramSectionDivider: "------------------------------\n",
+  compactModeDefault: true,
   h1KlineLimit: 240,
   d1KlineLimit: 420,
   httpTimeout: 8000,
@@ -51,8 +52,22 @@ let APP = {
     dumpPct: -8,
     selectedBullBonus: 1,
     selectedBearPenalty: 1.5,
-    majorCoinOpportunityPenalty: 1.5
+    majorCoinOpportunityPenalty: 1.5,
+    triggerBodyMinRatio: 0.5,
+    trapVolumeSpike: 1.3
   }
+}
+
+function isCompactMode(config) {
+  if (config && config.compact_mode === false) return false
+  return APP.compactModeDefault
+}
+
+function toSingleLine(text, maxLen) {
+  if (!text) return ""
+  let line = String(text).replace(/\s+/g, " ").trim()
+  if (line.length <= maxLen) return line
+  return line.slice(0, maxLen - 1).trim() + "…"
 }
 
 // ===== CONFIG STORAGE =====
@@ -378,8 +393,57 @@ function analyzeFrames(h1, d1, selectedTimeframe) {
     frames: parts.join(", "),
     selectedBias: selectedSignal ? selectedSignal.bias : "NEUTRAL",
     selectedScore: selectedSignal ? selectedSignal.score : 0,
-    selectedRsi: selectedSignal ? selectedSignal.rsi : null
+    selectedRsi: selectedSignal ? selectedSignal.rsi : null,
+    frameCandles: frames[selectedTimeframe] || []
   }
+}
+
+function analyzeRegimeFromCandles(candles, selectedBias) {
+  if (!candles || candles.length < APP.scoring.minFrameCandles) return { regime: "UNKNOWN", note: "Thiếu dữ liệu" }
+  let ctx = IndicatorManager.frameContext(candles)
+  let atr = 0
+  for (let i = candles.length - 14; i < candles.length; i++) {
+    if (i < 1) continue
+    let c = candles[i]
+    let p = candles[i - 1]
+    atr += Math.max(c.h - c.l, Math.abs(c.h - p.c), Math.abs(c.l - p.c))
+  }
+  atr /= 14
+  let atrPct = ctx.last.c > 0 ? (atr / ctx.last.c) * 100 : 0
+  if (atrPct < 1.2 && selectedBias === "NEUTRAL") return { regime: "RANGE", note: "Biên độ nén + bias trung tính" }
+  if (selectedBias !== "NEUTRAL") return { regime: "TREND", note: "Bias khung chính rõ" }
+  return { regime: "TRANSITION", note: "Đang chuyển pha" }
+}
+
+function analyzeEntryTrigger(candles) {
+  if (!candles || candles.length < 3) return { longConfirmed: false, note: "Thiếu nến xác nhận" }
+  let prev = candles[candles.length - 2]
+  let last = candles[candles.length - 1]
+  let range = Math.max(0.0000001, last.h - last.l)
+  let body = Math.abs(last.c - last.o)
+  let upperWick = last.h - Math.max(last.c, last.o)
+  let lowerWick = Math.min(last.c, last.o) - last.l
+  let bodyRatio = body / range
+  let bullEngulf = last.c > last.o && prev.c < prev.o && last.c >= prev.o && last.o <= prev.c
+  let bullPin = lowerWick > body * 1.8 && last.c >= last.l + range * 0.55
+  let bullClose = last.c > prev.h && bodyRatio >= APP.scoring.triggerBodyMinRatio
+  let longConfirmed = bullEngulf || bullPin || bullClose
+  return { longConfirmed: longConfirmed, note: longConfirmed ? "Có trigger LONG" : "Chờ trigger LONG" }
+}
+
+function analyzeVolumeTrap(candles) {
+  if (!candles || candles.length < 25) return { trap: false, note: "Thiếu dữ liệu trap" }
+  let last = candles[candles.length - 1]
+  let prev = candles[candles.length - 2]
+  let vols = candles.slice(candles.length - 21, candles.length - 1).map(x => x.qv || x.v)
+  let avg = vols.length ? vols.reduce((s, v) => s + v, 0) / vols.length : 0
+  let ratio = avg > 0 ? (last.qv || last.v) / avg : 0
+  let range = Math.max(0.0000001, last.h - last.l)
+  let body = Math.abs(last.c - last.o)
+  let bodyRatio = body / range
+  let upperWick = last.h - Math.max(last.c, last.o)
+  let trap = ratio >= APP.scoring.trapVolumeSpike && last.c > prev.c && (bodyRatio < 0.35 || upperWick > body * 1.5)
+  return { trap: trap, note: trap ? "Cảnh báo bull-trap, tránh đuổi" : "Không có trap rõ" }
 }
 
 // ===== SETUP SELECTION =====
@@ -442,6 +506,19 @@ function setupPlan(candidate) {
       action = "Chờ breakout"
       reason = "Điểm cao nhưng khung chính chưa rõ, cần nến xác nhận"
       break
+  }
+
+  if (candidate.regime && candidate.regime.regime === "RANGE") {
+    action = "Watchlist"
+    reason = "Đang sideway, chờ break rõ hơn"
+  }
+  if (candidate.triggerSignal && !candidate.triggerSignal.longConfirmed) {
+    action = "Watchlist"
+    reason = "Chưa có trigger LONG rõ"
+  }
+  if (candidate.trapSignal && candidate.trapSignal.trap) {
+    action = "Watchlist"
+    reason = candidate.trapSignal.note
   }
 
   let trigger = "Chờ " + candidate.timeframe + " đóng nến xác nhận theo hướng setup hoặc retest giữ EMA20"
@@ -510,6 +587,8 @@ function pickPlayable(results) {
 }
 
 function localAdvice(candidate) {
+  if (candidate.trapSignal && candidate.trapSignal.trap) return candidate.trapSignal.note
+  if (candidate.regime && candidate.regime.regime === "RANGE") return "Đang sideway/rung lắc, ưu tiên chờ phá vỡ có xác nhận."
   let rsiText = candidate.selectedRsi ? "RSI khoảng " + candidate.selectedRsi : "RSI chưa rõ"
 
   switch (true) {
@@ -586,6 +665,9 @@ async function analyzeCoin(coin, selectedTimeframe) {
   let h1 = pairData[0]
   let d1 = pairData[1]
   let ta = analyzeFrames(h1, d1, selectedTimeframe)
+  let regime = analyzeRegimeFromCandles(ta.frameCandles, ta.selectedBias)
+  let triggerSignal = analyzeEntryTrigger(ta.frameCandles)
+  let trapSignal = analyzeVolumeTrap(ta.frameCandles)
 
   let liquidityScore = 0
   if (coin.volume >= APP.scoring.strongVolumeM) liquidityScore = 1
@@ -611,6 +693,9 @@ async function analyzeCoin(coin, selectedTimeframe) {
     selectedBias: ta.selectedBias,
     selectedScore: ta.selectedScore,
     selectedRsi: ta.selectedRsi,
+    regime: regime,
+    triggerSignal: triggerSignal,
+    trapSignal: trapSignal,
     timeframe: selectedTimeframe,
     frames: ta.frames
   }
@@ -657,6 +742,9 @@ async function askDeepSeek(config, candidates) {
     ", rsi=" + (x.selectedRsi || "unknown") +
     ", 24h=" + x.change.toFixed(2) + "%" +
     ", vol=" + x.volume.toFixed(1) + "M" +
+    ", regime=" + (x.regime ? x.regime.regime : "N/A") +
+    ", trigger=" + (x.triggerSignal ? x.triggerSignal.note : "N/A") +
+    ", trap=" + (x.trapSignal ? x.trapSignal.note : "N/A") +
     ", frames=" + x.frames
   )).join("\n")
 
@@ -788,6 +876,8 @@ function appendTierSection(title, list) {
 
     tierText += "▪️ " + r.symbol + " (" + r.tierLabel + ", điểm " + r.finalScore + "/10, " + selectedTimeframe + ": " + r.selectedBias + "):\n"
     tierText += "   → " + localAdvice(r) + "\n"
+    if (r.regime) tierText += "   Regime: " + r.regime.regime + " — " + r.regime.note + "\n"
+    if (r.trapSignal) tierText += "   Trap: " + r.trapSignal.note + "\n"
     tierText += "   Trigger: " + r.trigger + "\n\n"
   }
 }
@@ -798,10 +888,62 @@ appendTierSection("Tier 3 - Nhỏ hơn, rủi ro cao hơn", tier3List)
 
 let aiText = await askDeepSeek(config, analysisList)
 let msgDiv = APP.telegramSectionDivider
+let compactMode = isCompactMode(config)
 let finalText = rankingText + "\n" + msgDiv + tierText
 
+if (compactMode) {
+  let compactTop = ranking.slice(0, 5)
+  finalText = "🔎 TOP " + limit + " COIN (rút gọn) — " + selectedTimeframe + "\n"
+  finalText += "Market: " + APP.marketName + "\n"
+  finalText += msgDiv
+  for (let i = 0; i < compactTop.length; i++) {
+    let r = compactTop[i]
+    finalText +=
+      (i + 1) +
+      ") " +
+      r.symbol +
+      " | $" +
+      fmtPrice(r.price) +
+      " | " +
+      r.change.toFixed(2) +
+      "% | Vol $" +
+      r.volume.toFixed(1) +
+      "M | " +
+      r.finalScore +
+      "/10\n"
+  }
+  finalText += msgDiv
+  finalText += "🎯 Coin đáng chú ý theo tier:\n"
+  for (let i = 0; i < analysisList.length; i++) {
+    let r = ensurePlan(analysisList[i])
+    finalText +=
+      "• " +
+      r.symbol +
+      " (" +
+      r.tierLabel +
+      ", " +
+      r.finalScore +
+      "/10): " +
+      r.action +
+      " — " +
+      toSingleLine(r.reason, 90) +
+      " | " +
+      (r.regime ? r.regime.regime : "N/A") +
+      " | " +
+      (r.triggerSignal ? r.triggerSignal.note : "N/A") +
+      "\n"
+  }
+  if (analysisList.length === 0) {
+    finalText += "• Chưa có setup sạch, ưu tiên watchlist.\n"
+  }
+}
+
 if (aiText && (finalText + msgDiv + "🧠 DeepSeek:\n" + aiText).length < APP.telegramSafeLimit) {
-  finalText += msgDiv + "🧠 DeepSeek:\n" + aiText + "\n"
+  if (compactMode) {
+    finalText += msgDiv + "🧠 AI: " + toSingleLine(aiText, 180) + "\n"
+  } else {
+    finalText += msgDiv + "🧠 DeepSeek:\n" + aiText + "\n"
+  }
 }
 
 let riskNote =
