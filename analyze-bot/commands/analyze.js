@@ -54,6 +54,11 @@ function isCompactMode(config) {
   return APP.compactModeDefault
 }
 
+function isAiPriceReviewEnabled(config) {
+  if (config && config.ai_price_review === false) return false
+  return true
+}
+
 function toSingleLine(text, maxLen) {
   if (!text) return ""
   let line = String(text).replace(/\s+/g, " ").trim()
@@ -69,6 +74,45 @@ function cleanAiText(text, maxLen) {
   body = body.replace(/\n{3,}/g, "\n\n")
   body = body.replace(/^[ \t]+|[ \t]+$/g, "")
   return body.trim()
+}
+
+function buildContextSummary(data) {
+  let parts = []
+  if (data.volPulse) parts.push("Vol: " + data.volPulse.summary)
+  if (data.entryTrigger) parts.push("Trigger: " + data.entryTrigger.note)
+  if (data.liquiditySweep) parts.push("Sweep: " + data.liquiditySweep.note)
+  if (data.volTrap) parts.push("Trap: " + data.volTrap.note)
+  if (data.futuresEdge) parts.push("Futures: " + data.futuresEdge.note)
+  return parts.join(" | ")
+}
+
+function filterAiTradeDup(text, keepPriceLevels) {
+  if (!text) return ""
+  let lines = String(text).split("\n")
+  let kept = []
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i].trim()
+    if (!line) {
+      kept.push("")
+      continue
+    }
+    let low = line.toLowerCase()
+    let isDupTradeLine = false
+    if (!keepPriceLevels) {
+      isDupTradeLine =
+        low.indexOf("entry") >= 0 ||
+        low.indexOf("stop loss") >= 0 ||
+        low.indexOf("tp1") >= 0 ||
+        low.indexOf("tp2") >= 0 ||
+        low.indexOf("tp3") >= 0 ||
+        low.indexOf("r:r") >= 0 ||
+        low.indexOf("invalidation") >= 0 ||
+        (low.indexOf("break") >= 0 && low.indexOf("$") >= 0)
+    }
+    if (!isDupTradeLine) kept.push(lines[i])
+  }
+  let out = kept.join("\n").replace(/\n{3,}/g, "\n\n").trim()
+  return out
 }
 
 // ===== CONFIG STORAGE =====
@@ -581,6 +625,7 @@ let TradePlanManager = {
     if (!data.entryTrigger || !data.entryTrigger.shortConfirmed) action = "WAIT"
     if (data.regime && data.regime.regime === "RANGE") action = "WAIT"
     if (data.volTrap && data.volTrap.shortTrap) action = "WAIT"
+    if (data.futuresEdge && data.futuresEdge.mode === "SHORT_SQUEEZE_RISK") action = "WAIT"
     return {
       ok: true,
       direction: "SHORT",
@@ -646,6 +691,7 @@ let TradePlanManager = {
     if (!data.entryTrigger || !data.entryTrigger.longConfirmed) action = "WAIT"
     if (data.regime && data.regime.regime === "RANGE") action = "WAIT"
     if (data.volTrap && data.volTrap.longTrap) action = "WAIT"
+    if (data.futuresEdge && data.futuresEdge.mode === "LONG_SQUEEZE_RISK") action = "WAIT"
 
     return {
       ok: true,
@@ -799,6 +845,24 @@ function setupPlan(data) {
     action = "WAIT"
     reason = data.volTrap.note
   }
+  if (data.sniperTrigger && data.sniperTrigger.longSniper) {
+    action = "LONG theo sniper setup"
+    reason = data.sniperTrigger.note
+  }
+  if (data.sniperTrigger && data.sniperTrigger.shortSniper) {
+    action = "SHORT theo sniper setup"
+    reason = data.sniperTrigger.note
+  }
+  if (data.futuresEdge) {
+    if (data.futuresEdge.mode === "LONG_SQUEEZE_RISK" && action.indexOf("LONG") >= 0) {
+      action = "WAIT"
+      reason = data.futuresEdge.note
+    }
+    if (data.futuresEdge.mode === "SHORT_SQUEEZE_RISK" && action.indexOf("SHORT") >= 0) {
+      action = "WAIT"
+      reason = data.futuresEdge.note
+    }
+  }
 
   return {
     action: action,
@@ -809,6 +873,15 @@ function setupPlan(data) {
 }
 
 function localAdvice(data) {
+  if (data.futuresEdge && data.futuresEdge.mode !== "BALANCED" && data.futuresEdge.mode !== "N/A") {
+    return data.futuresEdge.note
+  }
+  if (data.sniperTrigger && (data.sniperTrigger.longSniper || data.sniperTrigger.shortSniper)) {
+    return data.sniperTrigger.note + " Ưu tiên setup có trigger rõ."
+  }
+  if (data.liquiditySweep && (data.liquiditySweep.sweepHigh || data.liquiditySweep.sweepLow)) {
+    return data.liquiditySweep.note + " Tránh vào sớm trước khi nến xác nhận."
+  }
   if (data.volTrap && (data.volTrap.longTrap || data.volTrap.shortTrap)) {
     return data.volTrap.note + " Ưu tiên đứng ngoài chờ nến đóng rõ."
   }
@@ -1018,6 +1091,115 @@ function detectLiquidityLevels(candles) {
   }
 }
 
+function detectLiquiditySweep(candles) {
+  if (!candles || candles.length < 25) {
+    return {
+      sweepHigh: false,
+      sweepLow: false,
+      reclaimedHigh: false,
+      reclaimedLow: false,
+      note: "Thiếu dữ liệu sweep"
+    }
+  }
+  let look = candles.slice(-21, -1)
+  let last = candles[candles.length - 1]
+  let prev = candles[candles.length - 2]
+  let refHigh = Math.max.apply(null, look.map(x => x.h))
+  let refLow = Math.min.apply(null, look.map(x => x.l))
+  let sweepHigh = last.h > refHigh && last.c < refHigh
+  let sweepLow = last.l < refLow && last.c > refLow
+  let reclaimedHigh = sweepLow && last.c > prev.h
+  let reclaimedLow = sweepHigh && last.c < prev.l
+  let note = "Không có sweep rõ"
+  if (reclaimedHigh) note = "Sweep đáy + reclaim: tín hiệu đảo lên"
+  else if (reclaimedLow) note = "Sweep đỉnh + reclaim: tín hiệu đảo xuống"
+  else if (sweepLow || sweepHigh) note = "Có sweep nhưng reclaim chưa rõ"
+  return {
+    sweepHigh: sweepHigh,
+    sweepLow: sweepLow,
+    reclaimedHigh: reclaimedHigh,
+    reclaimedLow: reclaimedLow,
+    refHigh: refHigh,
+    refLow: refLow,
+    note: note
+  }
+}
+
+function analyzeSniperTrigger(data) {
+  let t = data.entryTrigger || { longConfirmed: false, shortConfirmed: false }
+  let s = data.liquiditySweep || { reclaimedHigh: false, reclaimedLow: false }
+  let v = data.volPulse || { buyScore: 0, sellScore: 0 }
+  let trap = data.volTrap || { longTrap: false, shortTrap: false }
+  let longSniper = t.longConfirmed && s.reclaimedHigh && v.buyScore >= v.sellScore && !trap.longTrap
+  let shortSniper = t.shortConfirmed && s.reclaimedLow && v.sellScore >= v.buyScore && !trap.shortTrap
+  let note = "Sniper chưa kích hoạt"
+  if (longSniper) note = "Sniper LONG: sweep low + reclaim + volume ủng hộ"
+  else if (shortSniper) note = "Sniper SHORT: sweep high + reclaim + volume ủng hộ"
+  return { longSniper: longSniper, shortSniper: shortSniper, note: note }
+}
+
+function buildBreakLevels(data) {
+  let candles = data.frameCandles
+  if (!candles || candles.length < APP.scoring.minFrameCandles) {
+    return { longBreak: null, shortBreak: null, note: "Thiếu dữ liệu để tính break level." }
+  }
+  let ctx = IndicatorManager.frameContext(candles)
+  let atr = ctx.atr || data.price * 0.02
+  let swing = ctx.swing || { high: null, low: null }
+  let liq = data.liquiditySweep || { refHigh: null, refLow: null }
+  let longBase = liq.refHigh != null ? liq.refHigh : swing.high
+  let shortBase = liq.refLow != null ? liq.refLow : swing.low
+  if (longBase == null || shortBase == null) {
+    return { longBreak: null, shortBreak: null, note: "Thiếu swing/ref level để xác định break." }
+  }
+  let longBreak = longBase + atr * 0.12
+  let shortBreak = shortBase - atr * 0.12
+  return {
+    longBreak: longBreak,
+    shortBreak: shortBreak,
+    note:
+      "Break xác nhận: LONG khi đóng nến trên $" +
+      fmtPrice(longBreak) +
+      ", SHORT khi đóng nến dưới $" +
+      fmtPrice(shortBreak) +
+      " (" +
+      data.timeframe +
+      ")."
+  }
+}
+
+function analyzeFuturesEdge(data) {
+  let ctx = data.futuresContext
+  if (!ctx || !ctx.available) return { mode: "N/A", note: "Không có dữ liệu futures", biasTilt: "NEUTRAL" }
+  let funding = ctx.fundingPct
+  let ls = ctx.longShortRatio
+  let oi = ctx.openInterest
+  let mode = "BALANCED"
+  let tilt = "NEUTRAL"
+  let note = "Funding/OI/L-S trung tính."
+
+  if (funding != null && ls != null) {
+    if (funding < -0.01 && ls < 1) {
+      mode = "SHORT_SQUEEZE_RISK"
+      tilt = "BULLISH"
+      note = "Funding âm + L/S nghiêng short: có rủi ro short squeeze."
+    } else if (funding > 0.01 && ls > 1.2) {
+      mode = "LONG_SQUEEZE_RISK"
+      tilt = "BEARISH"
+      note = "Funding dương cao + L/S nghiêng long: có rủi ro long squeeze."
+    }
+  }
+  if (oi != null && oi > 0 && data.volPulse) {
+    if (mode === "LONG_SQUEEZE_RISK" && data.volPulse.sellScore > data.volPulse.buyScore) {
+      note += " OI còn cao và bên bán đang chi phối, ưu tiên phòng thủ."
+    }
+    if (mode === "SHORT_SQUEEZE_RISK" && data.volPulse.buyScore > data.volPulse.sellScore) {
+      note += " OI cao + mua hồi tốt, có thể bật mạnh nếu break."
+    }
+  }
+  return { mode: mode, note: note, biasTilt: tilt }
+}
+
 function buildBuyReferencePlan(data) {
   let candles = data.frameCandles
   if (!candles || candles.length < APP.scoring.minFrameCandles) {
@@ -1048,6 +1230,7 @@ function isSamePlan(a, b) {
 // ===== AI SUMMARY =====
 async function askDeepSeek(config, data) {
   if (!config || !config.deepseek_api_key) return ""
+  let aiPriceReview = isAiPriceReviewEnabled(config)
 
   let prompt =
     "Bạn là trader fulltime hơn 10 năm kinh nghiệm. Phân tích ngắn bằng tiếng Việt, không hứa lợi nhuận, không bịa dữ liệu.\n" +
@@ -1068,7 +1251,11 @@ async function askDeepSeek(config, data) {
     "- Frames: " + data.frames + "\n\n" +
     "- Regime: " + (data.regime ? data.regime.regime : "N/A") + " (" + (data.regime ? data.regime.note : "—") + ")\n" +
     "- Trigger: " + (data.entryTrigger ? data.entryTrigger.note : "N/A") + "\n" +
+    "- Liquidity sweep: " + (data.liquiditySweep ? data.liquiditySweep.note : "N/A") + "\n" +
+    "- Sniper trigger: " + (data.sniperTrigger ? data.sniperTrigger.note : "N/A") + "\n" +
+    "- Break levels: " + (data.breakLevels ? data.breakLevels.note : "N/A") + "\n" +
     "- Volume trap: " + (data.volTrap ? data.volTrap.note : "N/A") + "\n" +
+    "- Futures edge: " + (data.futuresEdge ? data.futuresEdge.note : "N/A") + "\n" +
     "- Futures context: " +
     (data.futuresContext && data.futuresContext.available
       ? "Funding " +
@@ -1082,7 +1269,11 @@ async function askDeepSeek(config, data) {
     "- Vol signal: " + (data.volPulse ? data.volPulse.summary : "N/A") + "\n" +
     "- Vol read: " + (data.volPulse ? data.volPulse.insight : "N/A") + "\n\n" +
     "Trả lời theo format:\n" +
-    "1. Xu hướng\n2. Động lượng/RSI\n3. Vùng hành động hợp lý\n4. Rủi ro\n5. Kết luận LONG/SHORT/WAIT (không mâu thuẫn Vol signal)"
+    "1. Xu hướng\n2. Động lượng/RSI\n3. Vùng hành động hợp lý\n4. Rủi ro\n5. Kết luận LONG/SHORT/WAIT (không mâu thuẫn Vol signal)\n" +
+    "Thêm icon/emoji ở đầu mỗi mục để dễ đọc (ví dụ: 📈 xu hướng, ⚡ động lượng, 🎯 vùng giá, ⚠️ rủi ro, ✅ kết luận), tối đa 1-2 emoji mỗi mục.\n" +
+    (aiPriceReview
+      ? "Bạn được phép review mức giá (Entry/SL/TP/Break) nhưng phải nói ngắn gọn theo góc nhìn phản biện, không lặp máy móc."
+      : "Quan trọng: KHÔNG lặp lại các mức Entry/SL/TP/R:R/Trigger/Break đã có ở phần hệ thống phía trên. Chỉ phân tích bối cảnh và rủi ro.")
 
   try {
     let response = await HTTP.post({
@@ -1168,6 +1359,10 @@ data.futuresContext = futuresContext
 data.regime = analyzeRegime(data)
 data.entryTrigger = analyzeEntryTrigger(data.frameCandles)
 data.volTrap = analyzeVolumeTrap(data.frameCandles)
+data.liquiditySweep = detectLiquiditySweep(data.frameCandles)
+data.sniperTrigger = analyzeSniperTrigger(data)
+data.futuresEdge = analyzeFuturesEdge(data)
+data.breakLevels = buildBreakLevels(data)
 
 let plan = setupPlan(data)
 let tradePlan = TradePlanManager.build(data)
@@ -1183,11 +1378,14 @@ if (
   data.regime.regime !== "RANGE" &&
   data.entryTrigger &&
   data.entryTrigger.longConfirmed &&
-  (!data.volTrap || !data.volTrap.longTrap)
+  (!data.volTrap || !data.volTrap.longTrap) &&
+  (!data.futuresEdge || data.futuresEdge.mode === "BALANCED" || data.futuresEdge.mode === "N/A")
 ) {
   advice += " Volume đa khung có dấu hiệu mua lại."
 }
 let aiText = await askDeepSeek(config, data)
+let aiPriceReview = isAiPriceReviewEnabled(config)
+aiText = filterAiTradeDup(cleanAiText(aiText), aiPriceReview)
 let compactMode = isCompactMode(config)
 
 let msgDiv = APP.telegramSectionDivider
@@ -1209,40 +1407,12 @@ if (compactMode) {
       (data.futuresContext.longShortRatio != null ? data.futuresContext.longShortRatio.toFixed(2) : "N/A") +
       "\n"
   }
-  if (data.volPulse) {
-    text += "🔊 Vol signal: " + toSingleLine(data.volPulse.summary, 120) + "\n"
-    text += "🧠 Vol read: " + toSingleLine(data.volPulse.insight, 140) + "\n"
+  if (data.volPulse) text += "🔊 Vol signal: " + toSingleLine(data.volPulse.summary, 120) + "\n"
+  if (data.volPulse) text += "🧠 Vol read: " + toSingleLine(data.volPulse.insight, 140) + "\n"
+  text += "🧩 Plan hệ thống (Entry/SL/TP/Break/Trigger) đã gửi cho AI review ở dưới.\n"
+  if (aiText) {
+    text += "\n🧠 AI (" + (aiPriceReview ? "review mức giá + rủi ro" : "bối cảnh/rủi ro") + "):\n" + aiText + "\n"
   }
-  if (data.entryTrigger) text += "🕯 Trigger: " + data.entryTrigger.note + "\n"
-  if (data.volTrap) text += "⚠ Trap: " + data.volTrap.note + "\n"
-  text += "\n⚡ " + toSingleLine(advice, 120) + "\n"
-  text += "🎯 " + toSingleLine(plan.action + " — " + plan.reason, 120) + "\n"
-  text +=
-    "📌 " + (tradePlan.direction === "SHORT" ? "SHORT" : "Entry") + " " +
-    (tradePlan.entry ? "$" + fmtPrice(tradePlan.entry) : "N/A") +
-    " | SL " +
-    (tradePlan.stopLoss ? "$" + fmtPrice(tradePlan.stopLoss) : "N/A") +
-    " | TP2 " +
-    (tradePlan.tp2 ? "$" + fmtPrice(tradePlan.tp2) : "N/A") +
-    " | R:R " +
-    (tradePlan.rr ? "1:" + tradePlan.rr.toFixed(2) : "N/A") +
-    "\n"
-  let showBuyRef = !isSamePlan(tradePlan, buyRefPlan) || tradePlan.action === "WAIT"
-  if (showBuyRef) {
-    text +=
-      "🟢 BUY ref: Entry " +
-      (buyRefPlan.entry ? "$" + fmtPrice(buyRefPlan.entry) : "N/A") +
-      " | SL " +
-      (buyRefPlan.sl ? "$" + fmtPrice(buyRefPlan.sl) : "N/A") +
-      " | TP2 " +
-      (buyRefPlan.tp2 ? "$" + fmtPrice(buyRefPlan.tp2) : "N/A") +
-      " | R:R " +
-      (buyRefPlan.rr ? "1:" + buyRefPlan.rr.toFixed(2) : "N/A") +
-      "\n"
-  }
-  text += "\n✅ Trigger: " + toSingleLine(plan.trigger, 110) + "\n"
-  text += "⛔ Invalid: " + toSingleLine(plan.invalidation, 110) + "\n"
-  if (aiText) text += "\n🧠 AI:\n" + cleanAiText(aiText) + "\n"
   else text += "🧠 AI: chưa bật API key.\n"
 } else {
   text += msgDiv
@@ -1264,7 +1434,11 @@ if (compactMode) {
   if (data.volPulse) text += "🔊 Vol signal: " + data.volPulse.summary + " | " + data.volPulse.label + "\n"
   if (data.volPulse) text += "🧠 Vol read: " + data.volPulse.insight + "\n"
   if (data.entryTrigger) text += "🕯 Trigger: " + data.entryTrigger.note + "\n"
+  if (data.liquiditySweep) text += "🧲 Sweep: " + data.liquiditySweep.note + "\n"
+  if (data.sniperTrigger) text += "🎯 Sniper: " + data.sniperTrigger.note + "\n"
   if (data.volTrap) text += "⚠ Trap: " + data.volTrap.note + "\n"
+  if (data.futuresEdge) text += "📡 Futures edge: " + data.futuresEdge.note + "\n"
+  if (data.breakLevels) text += "🔓 " + data.breakLevels.note + "\n"
   text += msgDiv
   text += "⚡ Nhận định nhanh:\n"
   text += "→ " + advice + "\n"
@@ -1284,7 +1458,7 @@ if (compactMode) {
   text += "• Ghi chú: " + tradePlan.note + "\n"
   text += msgDiv
   if (aiText) {
-    text += "🧠 DeepSeek:\n" + aiText + "\n"
+    text += "🧠 DeepSeek (" + (aiPriceReview ? "review mức giá + rủi ro" : "bối cảnh/rủi ro") + "):\n" + aiText + "\n"
   } else {
     text += "🧠 DeepSeek: bỏ qua hoặc chưa cấu hình API key.\n"
   }
